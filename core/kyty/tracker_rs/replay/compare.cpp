@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
 	std::setvbuf(fa, nullptr, _IOFBF, 8 << 20);
 	std::setvbuf(fb, nullptr, _IOFBF, 8 << 20);
 	uint64_t compared = 0, differ = 0, digests = 0, digest_differ = 0, extra_a = 0, extra_b = 0;
-	uint64_t checked = 0, mismatched = 0, missing = 0, overlapped = 0;
+	uint64_t checked = 0, mismatched = 0, missing = 0, overlapped = 0, unchecked = 0, alone_shown = 0;
 	std::map<uint8_t, uint64_t> differ_by_op;
 	std::map<uint8_t, uint64_t> mismatch_by_op;
 	Entry x, y;
@@ -240,9 +240,11 @@ int main(int argc, char** argv) {
 				if (game != replay) {
 					mismatched++;
 					mismatch_by_op[x.op]++;
-					const bool concurrent = Overlapped(trace, by_seq, x.seq);
+					const bool checked_overlap = mismatched <= 5000;
+					const bool concurrent      = checked_overlap && Overlapped(trace, by_seq, x.seq);
 					overlapped += concurrent;
-					if (!concurrent || mismatched <= show) {
+					unchecked += !checked_overlap;
+					if ((checked_overlap && !concurrent && alone_shown++ < show) || mismatched <= show) {
 						const uint64_t* record = trace.words + by_seq[x.seq];
 						std::printf("%s seq %" PRIu64 " thread %" PRIu32 " start %" PRIu64 " ns duration %" PRIu64 " ns args %" PRIx64 " %" PRIx64 "\n",
 						            concurrent ? "concurrent" : "ALONE", x.seq, static_cast<uint32_t>(record[1]), record[4], record[5],
@@ -260,8 +262,9 @@ int main(int argc, char** argv) {
 	for (const auto& [op, count]: differ_by_op) std::printf("  op %u: %" PRIu64 " differences\n", op, count);
 	if (trace_path != nullptr) {
 		std::printf("game/A: %" PRIu64 " calls checked, %" PRIu64 " differ from what the game recorded (%" PRIu64
-		            " of them overlapped in time a state-changing call of another thread), %" PRIu64 " not in the trace\n",
-		            checked, mismatched, overlapped, missing);
+		            " of the first 5000 overlapped in time a state-changing call of another thread, %" PRIu64 " beyond them not examined), %" PRIu64
+		            " not in the trace\n",
+		            checked, mismatched, overlapped, unchecked, missing);
 		for (const auto& [op, count]: mismatch_by_op) std::printf("  op %u: %" PRIu64 " differences\n", op, count);
 	}
 	return (differ == 0 && extra_a == 0 && extra_b == 0) ? 0 : 1;
