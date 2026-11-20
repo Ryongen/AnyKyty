@@ -93,6 +93,7 @@ impl PageState {
     }
 }
 
+#[repr(C)]
 pub struct PageRegion {
     pub lock: SpinLock<[PageState; REGION_PAGES]>,
     pub read_hint: [AtomicU8; REGION_PAGES],

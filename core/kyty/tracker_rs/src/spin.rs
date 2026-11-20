@@ -39,6 +39,7 @@ pub fn current_thread() -> u64 {
 
 const SPIN_ROUNDS: u32 = 4096;
 
+#[repr(C, align(64))]
 pub struct SpinLock<T> {
     state: AtomicU32,
     owner: AtomicU64,
@@ -49,6 +50,16 @@ pub struct SpinLock<T> {
 
 unsafe impl<T: Send> Sync for SpinLock<T> {}
 unsafe impl<T: Send> Send for SpinLock<T> {}
+
+#[repr(C, align(64))]
+pub struct CacheLine<T>(pub T);
+
+impl<T> Deref for CacheLine<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
 
 pub struct Guard<'a, T> {
     lock: &'a SpinLock<T>,

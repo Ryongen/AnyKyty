@@ -2,7 +2,7 @@ use crate::arena::Zeroable;
 use crate::bits::{AtomicBits, Mask, PAGES};
 use crate::host::{self, Fatal};
 use crate::pages::{DeferTarget, Pages, Watch, PAGE_SIZE, REGION_SIZE};
-use crate::spin::{LockClass, SpinLock};
+use crate::spin::{CacheLine, LockClass, SpinLock};
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
@@ -48,19 +48,20 @@ pub struct Locked {
     pub busy: Option<Box<BusyPages>>,
 }
 
+#[repr(C)]
 pub struct Region {
     pub lock: SpinLock<Locked>,
     pages: AtomicPtr<Pages>,
     cpu_addr: AtomicU64,
     pub cpu_dirty: AtomicBits,
     pub gpu_dirty: AtomicBits,
+    pub cpu_dirty_epoch: CacheLine<AtomicU64>,
+    pub gpu_clean_epoch: AtomicU64,
+    pub host_write_epoch: AtomicU64,
+    pub kept_sync: AtomicU32,
+    pub deferred_protects: AtomicU32,
     pub has_cpu_dirty: AtomicBool,
     pub has_gpu_dirty: AtomicBool,
-    pub cpu_dirty_epoch: AtomicU64,
-    pub gpu_clean_epoch: AtomicU64,
-    pub kept_sync: AtomicU32,
-    pub host_write_epoch: AtomicU64,
-    pub deferred_protects: AtomicU32,
 }
 
 unsafe impl Zeroable for Region {}
