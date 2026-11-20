@@ -35,6 +35,103 @@
 #include <unistd.h>
 #endif
 
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+
+#include "kyty_tracker_rs.h"
+
+namespace Libs::Graphics {
+
+const KytyTrHost& TrackerRustHost() noexcept;
+
+struct PageManager::Impl {
+	KytyTrPages* rust = nullptr;
+};
+
+PageManager::PageManager(): m_impl(std::make_unique<Impl>()) {
+	kyty_tr_set_host(&TrackerRustHost());
+	m_impl->rust = kyty_tr_pages_create(HotPagesEnabled());
+}
+
+PageManager::~PageManager() {
+	kyty_tr_pages_destroy(m_impl->rust);
+}
+
+const void* PageManager::RustHandle() const noexcept {
+	return m_impl->rust;
+}
+
+const std::atomic<uint64_t>* PageManager::ReadGranules() const noexcept {
+	static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t));
+	return reinterpret_cast<const std::atomic<uint64_t>*>(kyty_tr_pages_read_granules(m_impl->rust));
+}
+
+bool PageManager::HasReadWatchers(uint64_t vaddr, uint64_t size) const noexcept {
+	return kyty_tr_pages_has_read_watchers(m_impl->rust, vaddr, size);
+}
+
+bool PageManager::HasReadWatchersUntraced(uint64_t vaddr, uint64_t size) const noexcept {
+	return kyty_tr_pages_has_read_watchers(m_impl->rust, vaddr, size);
+}
+
+bool PageManager::IsWatched(uint64_t vaddr) const {
+	return kyty_tr_pages_is_watched(m_impl->rust, vaddr);
+}
+
+bool PageManager::WatchedSpan(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept {
+	return kyty_tr_pages_watched_span(m_impl->rust, vaddr, size, first, end);
+}
+
+bool PageManager::WatchedSpanUntraced(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept {
+	return kyty_tr_pages_watched_span(m_impl->rust, vaddr, size, first, end);
+}
+
+bool PageManager::AllowExecute(uint64_t vaddr) {
+	return kyty_tr_pages_allow_execute(m_impl->rust, vaddr);
+}
+
+void PageManager::ReapplyProtection(uint64_t vaddr, uint64_t size) {
+	kyty_tr_pages_reapply_protection(m_impl->rust, vaddr, size);
+}
+
+template <bool track, bool is_read>
+void PageManager::UpdatePageWatchers(uint64_t vaddr, uint64_t size) {
+	kyty_tr_pages_update_watchers(m_impl->rust, vaddr, size, track, is_read);
+}
+
+template void PageManager::UpdatePageWatchers<true, true>(uint64_t, uint64_t);
+template void PageManager::UpdatePageWatchers<true, false>(uint64_t, uint64_t);
+template void PageManager::UpdatePageWatchers<false, true>(uint64_t, uint64_t);
+template void PageManager::UpdatePageWatchers<false, false>(uint64_t, uint64_t);
+
+bool PageManager::HotPagesEnabled() noexcept {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_HOT_PAGE_WRITE_WATCH");
+		if (value == nullptr || value[0] != '1') return false;
+		return HotWriteWatch::Get().Available();
+	}();
+	return enabled;
+}
+
+bool PageManager::HasHotPages() const noexcept {
+	return kyty_tr_pages_has_hot_pages(m_impl->rust);
+}
+
+void PageManager::NoteWriteFault(uint64_t vaddr) {
+	kyty_tr_pages_note_write_fault(m_impl->rust, vaddr);
+}
+
+void PageManager::CollectHotPageWrites(HotPageWritten written, void* context, uint64_t vaddr, uint64_t size) {
+	kyty_tr_pages_collect_hot_page_writes(m_impl->rust, written, context, vaddr, size);
+}
+
+void PageManager::ForgetHotPages(uint64_t vaddr, uint64_t size) {
+	kyty_tr_pages_forget_hot_pages(m_impl->rust, vaddr, size);
+}
+
+}
+
+#else
+
 namespace Libs::Graphics {
 namespace {
 
@@ -820,6 +917,45 @@ bool PageManager::HasHotPages() const noexcept {
 	return result;
 }
 
+#if defined(KYTY_TRACKER_REPLAY)
+void PageManager::DebugState(DebugEmit emit, void* context) const {
+	auto& impl = *m_impl;
+	for (uint64_t index = 0; index < REGION_COUNT; index++) {
+		const auto* region = impl.regions[index].load(std::memory_order_acquire);
+		if (region == nullptr) continue;
+		emit(context, &index, 1);
+		for (size_t page = 0; page < REGION_PAGES; page++) {
+			const auto&    state = region->pages[page];
+			const uint64_t word  = state.write_watchers | (static_cast<uint64_t>(state.access_watchers) << 8) |
+			                      (static_cast<uint64_t>(state.hot) << 16) | (static_cast<uint64_t>(state.write_faults) << 24) |
+			                      (static_cast<uint64_t>(state.fault_window) << 32) |
+			                      (static_cast<uint64_t>(region->read_hint[page].load()) << 40);
+			emit(context, &word, 1);
+		}
+	}
+	const uint64_t mark = UINT64_MAX;
+	emit(context, &mark, 1);
+	for (uint64_t index = 0; index < ADDRESS_SIZE / READ_GRANULE_SIZE / 64; index++) {
+		if (const uint64_t pair[] = {index, impl.read_granules[index].load()}; pair[1] != 0) emit(context, pair, 2);
+	}
+	emit(context, &mark, 1);
+	for (uint64_t index = 0; index < ADDRESS_SIZE / HOT_GRANULE_SIZE / 64; index++) {
+		if (const uint64_t pair[] = {index, impl.hot_granules[index].load()}; pair[1] != 0) emit(context, pair, 2);
+	}
+	emit(context, &mark, 1);
+	for (const auto& [page, last]: impl.hot_pages) {
+		const uint64_t pair[] = {page, last};
+		emit(context, pair, 2);
+	}
+	const uint64_t tail[] = {UINT64_MAX, impl.hot_count.load(), impl.hot_any.load(), impl.guest_write_faults.load(),
+	                         impl.protects[0].load(), impl.protects[1].load(), impl.protects[2].load(), impl.protects[3].load(),
+	                         impl.hot_last_line.load(), impl.hot_scans.load(), impl.hot_scan_ns.load(), impl.hot_collected.load(),
+	                         impl.hot_idle.load(), impl.hot_lost.load(), impl.hot_page_total.load(), impl.hot_run_total.load(),
+	                         impl.hot_scoped_scans.load(), impl.hot_promoted.load(), impl.hot_refused.load()};
+	emit(context, tail, std::size(tail));
+}
+#endif
+
 void PageManager::ForgetHotPages(uint64_t vaddr, uint64_t size) {
 	TrackerTrace::Call trace(TrackerTrace::Op::ForgetHotPages, vaddr, size);
 	auto&              impl = *m_impl;
@@ -847,3 +983,5 @@ void PageManager::ForgetHotPages(uint64_t vaddr, uint64_t size) {
 }
 
 }
+
+#endif

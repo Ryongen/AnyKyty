@@ -7,6 +7,47 @@ namespace Libs::Graphics {
 
 static_assert(std::atomic<void*>::is_always_lock_free);
 
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+
+#if defined(ANYPS5_KYTY_DLL)
+thread_local std::vector<MemoryTracker::DeferredProtect> MemoryTracker::s_deferred;
+#endif
+
+MemoryTracker::MemoryTracker(PageManager& page_manager)
+    : m_rust(kyty_tr_tracker_create(static_cast<const KytyTrPages*>(page_manager.RustHandle()))), m_page_manager(page_manager) {}
+
+MemoryTracker::~MemoryTracker() {
+	kyty_tr_tracker_destroy(m_rust);
+}
+
+#if KYTY_BUILD == KYTY_BUILD_DEBUG
+void MemoryTracker::ValidateGpuDirtyPages(const RangeSet& dirty, uint64_t vaddr, uint64_t size, const char* operation) const noexcept {
+	if (!GuestRange {vaddr, size}.Valid() || (vaddr & (TRACKER_PAGE_SIZE - 1)) != 0 || (size & (TRACKER_PAGE_SIZE - 1)) != 0) {
+		EXIT("MemoryTracker: invalid dirty-page validation range\n");
+	}
+	for (auto page = vaddr; page < vaddr + size; page += TRACKER_PAGE_SIZE) {
+		if (!dirty.Intersects(page, TRACKER_PAGE_SIZE)) {
+			EXIT("MemoryTracker: GPU-dirty tracker page has no dirty bytes, operation=%s addr=0x%016" PRIx64 "\n", operation, page);
+		}
+	}
+}
+
+void MemoryTracker::ValidateGpuDirtyOwnership(const RangeSet& dirty, uint64_t vaddr, uint64_t size, const char* operation) {
+	if (!GuestRange {vaddr, size}.Valid()) {
+		EXIT("invalid memory tracker range\n");
+	}
+	const auto begin = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
+	const auto end   = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+	for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
+		if (IsRegionGpuModified(page, TRACKER_PAGE_SIZE) != dirty.Intersects(page, TRACKER_PAGE_SIZE)) {
+			EXIT("MemoryTracker: tracker and byte ownership disagree, operation=%s addr=0x%016" PRIx64 "\n", operation, page);
+		}
+	}
+}
+#endif
+
+#else
+
 #if defined(ANYPS5_KYTY_DLL)
 thread_local std::vector<MemoryTracker::DeferredProtect> MemoryTracker::s_deferred;
 #endif
@@ -112,5 +153,7 @@ void MemoryTracker::UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
 		manager->ChangeState<DirtySource::Gpu, false>(offset, bytes);
 	});
 }
+
+#endif
 
 }

@@ -8,6 +8,10 @@
 #include "graphics/host_gpu/bdaDirtyRegions.h"
 #include "graphics/host_gpu/trackerTrace.h"
 
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+#include "kyty_tracker_rs.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -61,9 +65,17 @@ public:
 	TrackingSpinLock& operator=(const TrackingSpinLock&) = delete;
 
 	[[nodiscard]] static Contention TakeContention(SpinLockClass kind) noexcept {
-		auto& counters = s_contention[static_cast<size_t>(kind)];
-		return {.waits = counters.waits.exchange(0, std::memory_order_relaxed),
-		        .ns    = counters.ns.exchange(0, std::memory_order_relaxed)};
+		auto&      counters = s_contention[static_cast<size_t>(kind)];
+		Contention taken {.waits = counters.waits.exchange(0, std::memory_order_relaxed),
+		                  .ns    = counters.ns.exchange(0, std::memory_order_relaxed)};
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+		uint64_t waits = 0;
+		uint64_t ns    = 0;
+		kyty_tr_take_contention(static_cast<uint32_t>(kind), &waits, &ns);
+		taken.waits += waits;
+		taken.ns += ns;
+#endif
+		return taken;
 	}
 
 	void lock() noexcept {
@@ -181,6 +193,28 @@ private:
 
 static_assert(std::atomic_uint32_t::is_always_lock_free);
 
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+
+class RegionManager final {
+public:
+	struct WriteBlockProbe {
+		uint32_t opened  = 0;
+		bool     gpu     = false;
+		bool     tracked = false;
+	};
+
+	RegionManager() = delete;
+
+	[[nodiscard]] static uint64_t CpuDirtyEpoch() noexcept { return kyty_tr_cpu_dirty_epoch(); }
+	[[nodiscard]] static uint64_t GpuCleanEpoch() noexcept { return kyty_tr_gpu_clean_epoch(); }
+	[[nodiscard]] static uint64_t TakeOpenedUploadBytes() noexcept { return kyty_tr_take_opened_upload_bytes(); }
+	static void ApplyDeferred(RegionManager* region, uint64_t vaddr, uint64_t size) {
+		kyty_tr_apply_deferred_protection(region, vaddr, size);
+	}
+};
+
+#else
+
 class RegionManager final {
 public:
 	RegionManager(PageManager& page_manager, uint64_t cpu_addr)
@@ -221,6 +255,9 @@ public:
 		m_deferred_protects.fetch_sub(1, std::memory_order_acq_rel);
 	}
 	void NoteHostWrite() noexcept { m_host_write_epoch.fetch_add(1, std::memory_order_release); }
+	static void ApplyDeferred(RegionManager* region, uint64_t vaddr, uint64_t size) {
+		region->ApplyDeferredProtection(vaddr, size);
+	}
 
 	[[nodiscard]] static uint64_t GpuCleanEpoch() {
 		TrackerTrace::Call trace(TrackerTrace::Op::GpuCleanEpoch);
@@ -490,6 +527,43 @@ public:
 
 	TrackingSpinLock lock {SpinLockClass::Tracker};
 
+#if defined(KYTY_TRACKER_REPLAY)
+	template <typename Emit>
+	void DebugState(Emit&& emit) const {
+		const auto bits = [&](const RegionBits& value) {
+			uint64_t words[TRACKER_REGION_PAGES / 64];
+			for (size_t word = 0; word < TRACKER_REGION_PAGES / 64; word++) words[word] = value.Word(word);
+			emit(words, TRACKER_REGION_PAGES / 64);
+		};
+		bits(m_cpu_dirty);
+		bits(m_gpu_dirty);
+		bits(m_cpu_written[0]);
+		bits(m_cpu_written[1]);
+		bits(m_gpu_written);
+		bits(m_gpu_noted);
+		bits(m_block_opened);
+		const uint64_t flags[] = {m_any_block_opened, m_has_cpu_dirty.load(), m_has_gpu_dirty.load(), m_cpu_dirty_epoch.load(),
+		                          m_gpu_clean_epoch.load(), m_host_write_epoch.load(), m_deferred_protects.load(), m_kept_sync.load(),
+		                          m_busy != nullptr};
+		emit(flags, std::size(flags));
+		if (m_busy != nullptr) {
+			for (size_t page = 0; page < TRACKER_REGION_PAGES; page++) {
+				const uint64_t word = m_busy->seen[page] | (static_cast<uint64_t>(m_busy->cleaned[page]) << 32);
+				emit(&word, 1);
+			}
+			for (size_t page = 0; page < TRACKER_REGION_PAGES; page += 8) {
+				uint64_t word = 0;
+				for (size_t byte = 0; byte < 8; byte++) word |= static_cast<uint64_t>(m_busy->writes[page + byte]) << (byte * 8);
+				emit(&word, 1);
+			}
+			bits(m_busy->faulted);
+		}
+	}
+	[[nodiscard]] static std::array<uint64_t, 3> DebugGlobals() {
+		return {s_cpu_dirty_epoch.load(), s_gpu_clean_epoch.load(), s_opened_upload_bytes.load()};
+	}
+#endif
+
 private:
 	void NoteOpenedUpload(const RegionBits* uploaded, const RegionBits& cleaned) {
 		if (!m_any_block_opened) {
@@ -572,6 +646,8 @@ private:
 	inline static std::atomic<uint64_t> s_gpu_clean_epoch {0};
 	inline static std::atomic<uint64_t> s_opened_upload_bytes {0};
 };
+
+#endif
 
 }
 

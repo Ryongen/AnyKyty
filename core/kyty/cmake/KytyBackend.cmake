@@ -75,6 +75,9 @@ else()
         "${ANYPS5_KYTY_BINARY_DIR}/3rdparty/SPIRV-Tools/source/libSPIRV-Tools.a"
     )
 endif()
+if(ANYPS5_KYTY_RUST_TRACKER AND NOT ANYPS5_KYTY_THIN_LTO)
+    list(APPEND ANYPS5_KYTY_ARCHIVES "${ANYPS5_KYTY_BINARY_DIR}/tracker_rs/release/libkyty_tracker_rs.a")
+endif()
 ExternalProject_Add(kyty_gpu
     SOURCE_DIR "${PROJECT_SOURCE_DIR}/core/kyty"
     BINARY_DIR "${ANYPS5_KYTY_BINARY_DIR}"
@@ -92,6 +95,7 @@ ExternalProject_Add(kyty_gpu
         -DKYTY_THIN_LTO_JOBS=${ANYPS5_KYTY_JOBS}
         -DKYTY_PGO_PROFILE=${anyps5KytyPgo}
         -DKYTY_PGO_GENERATE=${ANYPS5_KYTY_PGO_GENERATE}
+        -DKYTY_RUST_TRACKER=${ANYPS5_KYTY_RUST_TRACKER}
         ${anyps5KytyPlatformArgs}
     BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target kyty_gpu_bundle --parallel ${ANYPS5_KYTY_JOBS}
     INSTALL_COMMAND ""
@@ -120,6 +124,10 @@ target_include_directories(anyps5_kyty_gpu SYSTEM
         "${PROJECT_SOURCE_DIR}/3rdparty/magic_enum/include/magic_enum"
         "${PROJECT_SOURCE_DIR}/3rdparty/tracy/public"
 )
+if(ANYPS5_KYTY_RUST_TRACKER)
+    target_compile_definitions(anyps5_kyty_gpu INTERFACE ANYPS5_KYTY_RUST_TRACKER=1)
+    target_include_directories(anyps5_kyty_gpu INTERFACE "${PROJECT_SOURCE_DIR}/core/kyty/tracker_rs/include")
+endif()
 target_compile_definitions(anyps5_kyty_gpu
     INTERFACE
         ANYPS5_KYTY=1

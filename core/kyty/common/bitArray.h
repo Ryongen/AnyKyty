@@ -65,6 +65,10 @@ public:
 		});
 	}
 
+	[[nodiscard]] uint64_t Word(size_t word) const { return Load(word); }
+
+	void SetWord(size_t word, uint64_t value) { Store(word, value); }
+
 	[[nodiscard]] bool Get(size_t index) const {
 		return (Load(index / BITS_PER_WORD) & (uint64_t {1} << (index % BITS_PER_WORD))) != 0;
 	}

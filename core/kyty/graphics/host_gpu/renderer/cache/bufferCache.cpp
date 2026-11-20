@@ -1600,11 +1600,11 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 				if (queued) {
 					host_copies->Call(
 					    [](void* manager, uint64_t address, uint64_t size) {
-						    static_cast<RegionManager*>(manager)->ApplyDeferredProtection(address, size);
+						    RegionManager::ApplyDeferred(static_cast<RegionManager*>(manager), address, size);
 					    },
 					    item.manager, item.address, item.size);
 				} else {
-					item.manager->ApplyDeferredProtection(item.address, item.size);
+					RegionManager::ApplyDeferred(item.manager, item.address, item.size);
 				}
 			}
 			deferred.clear();

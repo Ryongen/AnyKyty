@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+#include "graphics/host_gpu/memoryTrackerRust.h"
+#else
+
 namespace Libs::Graphics {
 
 class MemoryTracker final {
@@ -437,6 +441,20 @@ public:
 		UploadScope& operator=(const UploadScope&) = delete;
 	};
 	[[nodiscard]] static std::vector<DeferredProtect>& DeferredProtects() noexcept { return s_deferred; }
+#if defined(KYTY_TRACKER_REPLAY)
+	template <typename Emit>
+	void DebugState(Emit&& emit) const {
+		for (uint64_t index = 0; index < REGION_COUNT; index++) {
+			const auto* manager = m_regions[index].load(std::memory_order_acquire);
+			if (manager == nullptr) continue;
+			emit(&index, 1);
+			manager->DebugState(emit);
+		}
+		const auto     globals  = RegionManager::DebugGlobals();
+		const uint64_t tail[] = {UINT64_MAX, globals[0], globals[1], globals[2], m_kept_pages.load()};
+		emit(tail, std::size(tail));
+	}
+#endif
 	[[nodiscard]] static bool AsyncReprotect() noexcept {
 		static const bool on = [] {
 			const char* value = std::getenv("KYTY_ASYNC_REPROTECT");
@@ -549,5 +567,7 @@ private:
 };
 
 }
+
+#endif
 
 #endif

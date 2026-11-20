@@ -292,6 +292,12 @@ target_link_libraries(kyty_gpu
 target_compile_features(kyty_gpu PUBLIC cxx_std_20)
 target_compile_definitions(kyty_gpu PUBLIC ANYPS5_KYTY=1)
 
+option(KYTY_RUST_TRACKER "Build the memory tracker from the Rust crate core/kyty/tracker_rs instead of its C++ (experiment)" OFF)
+set(KYTY_RUST_TRACKER_ARCHIVE "")
+if(KYTY_RUST_TRACKER)
+    include("${KYTY_DIR}/cmake/KytyRustTracker.cmake")
+endif()
+
 option(KYTY_ENABLE_ASAN "Instrument the Kyty renderer with AddressSanitizer" OFF)
 if(KYTY_ENABLE_ASAN)
     target_compile_options(kyty_gpu PRIVATE -fsanitize=address)
@@ -337,6 +343,9 @@ endforeach()
 option(KYTY_THIN_LTO "Optimize kyty_gpu across translation units with ThinLTO and pre-link it with lld into one native object" ON)
 set(KYTY_THIN_LTO_JOBS "0" CACHE STRING "Parallel ThinLTO back-end jobs of the lld pre-link, 0 for lld's default")
 set(KYTY_BUNDLE_TARGETS kyty_gpu fmt xxhash TracyClient zarchive libzstd_static SPIRV-Tools-opt SPIRV-Tools-static)
+if(KYTY_RUST_TRACKER)
+    list(APPEND KYTY_BUNDLE_TARGETS kyty_tracker_rs)
+endif()
 if(KYTY_THIN_LTO AND WIN32 AND NOT KYTY_DLL)
     message(FATAL_ERROR "KYTY_THIN_LTO pre-links kyty_gpu with lld -r, which lld cannot do for Windows (COFF) objects: configure AnyPS5 with -DANYPS5_KYTY_THIN_LTO=OFF")
 endif()
@@ -373,6 +382,7 @@ if(KYTY_THIN_LTO)
         COMMAND "${CMAKE_CXX_COMPILER}" ${kytyPrelinkFlags} ${kytyPrelinkOptions} -o "${kytyPrelinkObject}"
                 -Wl,--whole-archive "$<TARGET_FILE:kyty_gpu>" "$<TARGET_FILE:fmt>" "$<TARGET_FILE:xxhash>" "$<TARGET_FILE:TracyClient>" -Wl,--no-whole-archive
                 "$<TARGET_FILE:zarchive>" "$<TARGET_FILE:libzstd_static>" "$<TARGET_FILE:SPIRV-Tools-opt>" "$<TARGET_FILE:SPIRV-Tools-static>"
+                ${KYTY_RUST_TRACKER_ARCHIVE}
         COMMAND "${CMAKE_COMMAND}" -E rm -f "${kytyPrelinkArchive}"
         COMMAND "${CMAKE_AR}" qcD "${kytyPrelinkArchive}" "${kytyPrelinkObject}"
         COMMAND "${CMAKE_RANLIB}" -D "${kytyPrelinkArchive}"
