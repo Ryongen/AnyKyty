@@ -655,6 +655,40 @@ bool HotCollect(uint64_t begin, uint64_t end, void (*written)(void*, uint64_t, u
 
 }
 
+void History(const Trace& trace, const Index& index, uint64_t page, uint64_t until) {
+	std::vector<std::pair<uint64_t, uint64_t>> all(index.top.begin(), index.top.end());
+	for (const auto& entry: index.nested) all.emplace_back(std::get<1>(entry), std::get<2>(entry));
+	std::sort(all.begin(), all.end());
+	const auto covers = [&](uint64_t address, uint64_t size) { return size != 0 && address <= page + 4095 && page < address + size; };
+	for (const auto& [seq, offset]: all) {
+		if (seq > until) break;
+		const auto view = Decode(trace.words + offset);
+		bool       hit  = false;
+		switch (view.op) {
+			case 3: case 5: case 7: case 10: case 11: case 34: case 35: case 36: case 37: case 38: case 39: case 40: case 46: case 48: case 50:
+			case 53: case 54: hit = covers(view.Arg(0), view.Arg(1)); break;
+			case 4: case 6: case 9: case 42: case 43: case 47: hit = covers(view.Arg(0), 1); break;
+			case 52: case 56: hit = covers(view.Arg(1), view.Arg(2)); break;
+			default: break;
+		}
+		std::string effects;
+		view.ForEachEvent([&](uint8_t kind, const uint64_t* words, size_t count) {
+			if ((kind == 1 || kind == 3 || kind == 4 || kind == 9) && count >= 2 && covers(words[0], words[1])) {
+				char text[96];
+				std::snprintf(text, sizeof(text), " ev%u(%" PRIx64 ",%" PRIx64 "%s)", kind, words[0], words[1], kind == 1 ? (words[2] == 1 ? ",R" : words[2] == 3 ? ",RW" : ",NA") : "");
+				effects += text;
+				hit = true;
+			}
+		});
+		if (!hit) continue;
+		std::printf("seq %" PRIu64 " parent %" PRIu64 " op %u tid %u fault %u t %.6f dur %" PRIu64 " args %" PRIx64 " %" PRIx64 " %" PRIx64 " %" PRIx64 " %" PRIx64 " res",
+		            seq, view.Parent(), view.op, view.Tid(), view.Flags() & 1u, static_cast<double>(view.Start()) / 1e9, view.Duration(), view.Arg(0), view.Arg(1),
+		            view.Arg(2), view.Arg(3), view.Arg(4));
+		for (size_t index = 0; index < view.results; index++) std::printf(" %" PRIx64, view.Results()[index]);
+		std::printf("%s\n", effects.c_str());
+	}
+}
+
 void Profile(const Trace& trace, const Index& index) {
 	std::unordered_map<uint32_t, std::string> names;
 	std::unordered_map<uint32_t, uint64_t>    roles;
@@ -959,6 +993,8 @@ int main(int argc, char** argv) {
 	bool        stats_only   = false;
 	bool        apply_taken  = false;
 	bool        profile      = false;
+	uint64_t    history_page = 0;
+	uint64_t    history_until = UINT64_MAX;
 	uint64_t    digest_every = 0;
 	uint64_t    limit        = UINT64_MAX;
 	for (int arg = 2; arg < argc; arg++) {
@@ -970,6 +1006,8 @@ int main(int argc, char** argv) {
 		else if (option == "--hot") g_hot = true;
 		else if (option == "--apply-taken") apply_taken = true;
 		else if (option == "--profile") profile = true;
+		else if (option == "--history" && arg + 1 < argc) history_page = std::strtoull(argv[++arg], nullptr, 16);
+		else if (option == "--until" && arg + 1 < argc) history_until = std::strtoull(argv[++arg], nullptr, 10);
 		else if (option == "--digest-every" && arg + 1 < argc) digest_every = std::strtoull(argv[++arg], nullptr, 10);
 		else if (option == "--limit" && arg + 1 < argc) limit = std::strtoull(argv[++arg], nullptr, 10);
 	}
@@ -985,6 +1023,10 @@ int main(int argc, char** argv) {
 	if (stats_only) return 0;
 	if (profile) {
 		Profile(trace, index);
+		return 0;
+	}
+	if (history_page != 0) {
+		History(trace, index, history_page & ~uint64_t {4095}, history_until);
 		return 0;
 	}
 	for (const auto& [seq, offset]: index.top) {

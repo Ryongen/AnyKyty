@@ -91,29 +91,6 @@ impl PageState {
             Mode::ReadWrite
         }
     }
-
-    fn add_delta(&mut self, watch: Watch, delta: i32, address: u64) -> u32 {
-        let (counter, overflow, underflow) = match watch {
-            Watch::Access => (&mut self.access_watchers, Fatal::ReadWatcherOverflow, Fatal::ReadWatcherUnderflow),
-            Watch::Write => (&mut self.write_watchers, Fatal::WriteWatcherOverflow, Fatal::WriteWatcherUnderflow),
-        };
-        match delta {
-            1 => {
-                if *counter == u8::MAX {
-                    host::fatal(overflow, address, 0);
-                }
-                *counter += 1;
-            }
-            -1 => {
-                if *counter == 0 {
-                    host::fatal(underflow, address, 0);
-                }
-                *counter -= 1;
-            }
-            _ => {}
-        }
-        *counter as u32
-    }
 }
 
 pub struct PageRegion {
@@ -340,32 +317,67 @@ impl Pages {
         mask: Option<&Mask>,
         sink: Option<&dyn DeferTarget>,
     ) {
-        let is_read = watch == Watch::Access;
-        let mut pages = region.lock.lock();
-        let mut perms = pages[first].perms();
+        let all = &Mask::EMPTY;
+        match (track, watch, mask) {
+            (true, Watch::Write, None) => self.update_region_watchers_with::<true, false, false>(region, base, first, last, all, sink),
+            (true, Watch::Write, Some(mask)) => self.update_region_watchers_with::<true, false, true>(region, base, first, last, mask, sink),
+            (true, Watch::Access, None) => self.update_region_watchers_with::<true, true, false>(region, base, first, last, all, sink),
+            (true, Watch::Access, Some(mask)) => self.update_region_watchers_with::<true, true, true>(region, base, first, last, mask, sink),
+            (false, Watch::Write, None) => self.update_region_watchers_with::<false, false, false>(region, base, first, last, all, sink),
+            (false, Watch::Write, Some(mask)) => self.update_region_watchers_with::<false, false, true>(region, base, first, last, mask, sink),
+            (false, Watch::Access, None) => self.update_region_watchers_with::<false, true, false>(region, base, first, last, all, sink),
+            (false, Watch::Access, Some(mask)) => self.update_region_watchers_with::<false, true, true>(region, base, first, last, mask, sink),
+        }
+    }
+
+    #[inline(always)]
+    fn update_region_watchers_with<const TRACK: bool, const READ: bool, const MASKED: bool>(
+        &self,
+        region: &PageRegion,
+        base: u64,
+        first: usize,
+        last: usize,
+        mask: &Mask,
+        sink: Option<&dyn DeferTarget>,
+    ) {
+        let mut guard = region.lock.lock();
+        let states: &mut [PageState; REGION_PAGES] = &mut guard;
+        let mut perms = states[first].perms();
         let mut range_begin: usize = 0;
         let mut range_bytes: u64 = 0;
         let mut potential: u64 = 0;
-        let delta = if track { 1 } else { -1 };
         let release = |range_begin: usize, range_bytes: &mut u64, potential: &mut u64, perms: Mode| {
             if *range_bytes != 0 {
                 let address = base + range_begin as u64 * PAGE_SIZE;
                 match sink {
-                    Some(target) if track && !is_read => target.defer(address, *range_bytes),
+                    Some(target) if TRACK && !READ => target.defer(address, *range_bytes),
                     _ => self.protect(address, *range_bytes, perms),
                 }
                 *range_bytes = 0;
                 *potential = 0;
             }
         };
-        for page_index in first..last {
+        for (page_index, page) in states.iter_mut().enumerate().take(last).skip(first) {
             let address = base + page_index as u64 * PAGE_SIZE;
-            let update = mask.is_none_or(|mask| mask.get(page_index));
-            let page = &mut pages[page_index];
+            let update = !MASKED || mask.get(page_index);
             let old_perms = page.perms();
-            let new_count = page.add_delta(watch, if update { delta } else { 0 }, address);
+            let counter = if READ { &mut page.access_watchers } else { &mut page.write_watchers };
+            if update {
+                if TRACK {
+                    if *counter == u8::MAX {
+                        host::fatal(if READ { Fatal::ReadWatcherOverflow } else { Fatal::WriteWatcherOverflow }, address, 0);
+                    }
+                    *counter += 1;
+                } else {
+                    if *counter == 0 {
+                        host::fatal(if READ { Fatal::ReadWatcherUnderflow } else { Fatal::WriteWatcherUnderflow }, address, 0);
+                    }
+                    *counter -= 1;
+                }
+            }
+            let new_count = *counter;
             let new_perms = page.perms();
-            if is_read {
+            if READ {
                 let faults = page.access_watchers != 0;
                 if faults {
                     self.mark_read_granule(address);
@@ -381,7 +393,7 @@ impl Pages {
             if !update {
                 continue;
             }
-            let edge = (track && new_count == 1) || (!track && new_count == 0);
+            let edge = if TRACK { new_count == 1 } else { new_count == 0 };
             if edge && old_perms != new_perms {
                 if range_bytes == 0 {
                     range_begin = page_index;
@@ -391,8 +403,8 @@ impl Pages {
             }
         }
         release(range_begin, &mut range_bytes, &mut potential, perms);
-        drop(pages);
-        if is_read {
+        drop(guard);
+        if READ {
             self.sync_read_granules(region, base, first, last);
         }
     }
