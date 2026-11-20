@@ -109,6 +109,48 @@ bool ValidRecord(const uint64_t* record, size_t available) {
 	return ((hash ^ (hash >> 32) ^ (hash >> 16)) & 0xFFFFu) == (header >> 48);
 }
 
+bool Mutating(uint8_t op) {
+	switch (op) {
+		case 7:
+		case 9:
+		case 10:
+		case 11:
+		case 34:
+		case 37:
+		case 38:
+		case 39:
+		case 40:
+		case 42:
+		case 43:
+		case 44:
+		case 48:
+		case 52:
+		case 53:
+		case 54:
+		case 55:
+		case 56:
+		case 59: return true;
+		default: return false;
+	}
+}
+
+bool Overlapped(const File& trace, const std::vector<uint64_t>& by_seq, uint64_t seq) {
+	const uint64_t* self  = trace.words + by_seq[seq];
+	const uint32_t  tid   = static_cast<uint32_t>(self[1]);
+	const uint64_t  begin = self[4];
+	const uint64_t  end   = self[4] + self[5];
+	const uint64_t  from  = seq > 200000 ? seq - 200000 : 1;
+	const uint64_t  to    = std::min<uint64_t>(by_seq.size(), seq + 200000);
+	for (uint64_t other = from; other < to; other++) {
+		if (other == seq || by_seq[other] == 0) continue;
+		const uint64_t* record = trace.words + by_seq[other];
+		if (static_cast<uint32_t>(record[1]) == tid) continue;
+		if (!Mutating(static_cast<uint8_t>(record[0] >> 8))) continue;
+		if (record[4] <= end && record[4] + record[5] >= begin) return true;
+	}
+	return false;
+}
+
 std::string Describe(const std::vector<uint64_t>& words) {
 	std::string text;
 	char        buffer[64];
@@ -161,7 +203,7 @@ int main(int argc, char** argv) {
 	std::setvbuf(fa, nullptr, _IOFBF, 8 << 20);
 	std::setvbuf(fb, nullptr, _IOFBF, 8 << 20);
 	uint64_t compared = 0, differ = 0, digests = 0, digest_differ = 0, extra_a = 0, extra_b = 0;
-	uint64_t checked = 0, mismatched = 0, missing = 0;
+	uint64_t checked = 0, mismatched = 0, missing = 0, overlapped = 0;
 	std::map<uint8_t, uint64_t> differ_by_op;
 	std::map<uint8_t, uint64_t> mismatch_by_op;
 	Entry x, y;
@@ -198,7 +240,13 @@ int main(int argc, char** argv) {
 				if (game != replay) {
 					mismatched++;
 					mismatch_by_op[x.op]++;
-					if (mismatched <= show) {
+					const bool concurrent = Overlapped(trace, by_seq, x.seq);
+					overlapped += concurrent;
+					if (!concurrent || mismatched <= show) {
+						const uint64_t* record = trace.words + by_seq[x.seq];
+						std::printf("%s seq %" PRIu64 " thread %" PRIu32 " start %" PRIu64 " ns duration %" PRIu64 " ns args %" PRIx64 " %" PRIx64 "\n",
+						            concurrent ? "concurrent" : "ALONE", x.seq, static_cast<uint32_t>(record[1]), record[4], record[5],
+						            ((record[0] >> 16) & 0xFu) > 0 ? record[6] : 0, ((record[0] >> 16) & 0xFu) > 1 ? record[7] : 0);
 						std::printf("game/A differ at seq %" PRIu64 " op %u\n  game: %s\n  A:    %s\n", x.seq, x.op, Describe(game).c_str(),
 						            Describe(replay).c_str());
 					}
@@ -211,8 +259,9 @@ int main(int argc, char** argv) {
 	            compared, differ, digests, digest_differ, extra_a, extra_b);
 	for (const auto& [op, count]: differ_by_op) std::printf("  op %u: %" PRIu64 " differences\n", op, count);
 	if (trace_path != nullptr) {
-		std::printf("game/A: %" PRIu64 " calls checked, %" PRIu64 " differ from what the game recorded, %" PRIu64 " not in the trace\n", checked,
-		            mismatched, missing);
+		std::printf("game/A: %" PRIu64 " calls checked, %" PRIu64 " differ from what the game recorded (%" PRIu64
+		            " of them overlapped in time a state-changing call of another thread), %" PRIu64 " not in the trace\n",
+		            checked, mismatched, overlapped, missing);
 		for (const auto& [op, count]: mismatch_by_op) std::printf("  op %u: %" PRIu64 " differences\n", op, count);
 	}
 	return (differ == 0 && extra_a == 0 && extra_b == 0) ? 0 : 1;

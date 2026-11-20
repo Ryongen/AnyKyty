@@ -19,7 +19,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bit>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <thread>
@@ -769,7 +771,179 @@ int Contend(unsigned threads, uint64_t rounds) {
 	return 0;
 }
 
+struct Invariants {
+	uint64_t regions = 0, pages = 0, both = 0, write_mismatch = 0, access_mismatch = 0, flag_mismatch = 0, deferred = 0;
+};
+
+Invariants CheckState(MemoryTracker& tracker, PageManager& pages) {
+	std::vector<uint64_t> words;
+	const auto            emit = [&](const uint64_t* data, size_t count) { words.insert(words.end(), data, data + count); };
+#if defined(ANYPS5_KYTY_RUST_TRACKER)
+	kyty_tr_debug_state(
+	    tracker.RustHandle(), nullptr,
+	    [](void* context, const uint64_t* data, size_t count) { (*static_cast<decltype(emit)*>(context))(data, count); },
+	    const_cast<void*>(static_cast<const void*>(&emit)));
+	const size_t tracker_words = words.size();
+	kyty_tr_debug_state(
+	    nullptr, static_cast<const KytyTrPages*>(pages.RustHandle()),
+	    [](void* context, const uint64_t* data, size_t count) { (*static_cast<decltype(emit)*>(context))(data, count); },
+	    const_cast<void*>(static_cast<const void*>(&emit)));
+#else
+	tracker.DebugState(emit);
+	const size_t tracker_words = words.size();
+	pages.DebugState([](void* context, const uint64_t* data, size_t count) { (*static_cast<decltype(emit)*>(context))(data, count); },
+	                 const_cast<void*>(static_cast<const void*>(&emit)));
+#endif
+	constexpr size_t W = TRACKER_REGION_PAGES / 64;
+	struct Region {
+		uint64_t cpu[W], gpu[W];
+		uint64_t has_cpu, has_gpu, deferred;
+	};
+	std::map<uint64_t, Region> regions;
+	size_t at = 0;
+	while (at < tracker_words && words[at] != UINT64_MAX) {
+		Region region {};
+		const uint64_t index = words[at++];
+		std::memcpy(region.cpu, &words[at], W * 8);
+		std::memcpy(region.gpu, &words[at + W], W * 8);
+		at += 7 * W;
+		region.has_cpu  = words[at + 1];
+		region.has_gpu  = words[at + 2];
+		region.deferred = words[at + 6];
+		const bool busy = words[at + 8] != 0;
+		at += 9;
+		if (busy) at += TRACKER_REGION_PAGES + TRACKER_REGION_PAGES / 8 + W;
+		regions[index] = region;
+	}
+	Invariants result;
+	result.regions = regions.size();
+	for (const auto& [index, region]: regions) {
+		bool any_cpu = false, any_gpu = false;
+		for (size_t word = 0; word < W; word++) {
+			any_cpu |= region.cpu[word] != 0;
+			any_gpu |= region.gpu[word] != 0;
+			result.both += std::popcount(region.cpu[word] & region.gpu[word]);
+		}
+		result.flag_mismatch += (region.has_cpu != 0) != any_cpu;
+		result.flag_mismatch += (region.has_gpu != 0) != any_gpu;
+		result.deferred += region.deferred;
+	}
+	at = tracker_words;
+	while (at < words.size() && words[at] != UINT64_MAX) {
+		const uint64_t index = words[at++];
+		const auto     it    = regions.find(index);
+		for (size_t page = 0; page < TRACKER_REGION_PAGES; page++) {
+			const uint64_t state  = words[at + page];
+			const auto     write  = state & 0xFFu;
+			const auto     access = (state >> 8) & 0xFFu;
+			if (it == regions.end()) continue;
+			result.pages++;
+			const bool cpu = (it->second.cpu[page / 64] >> (page % 64)) & 1u;
+			const bool gpu = (it->second.gpu[page / 64] >> (page % 64)) & 1u;
+			result.write_mismatch += write != (cpu ? 0u : 1u);
+			result.access_mismatch += access != (gpu ? 1u : 0u);
+		}
+		at += TRACKER_REGION_PAGES;
+	}
+	return result;
+}
+
+int Stress(unsigned threads, uint64_t rounds, uint64_t seed) {
+	::setenv("KYTY_ASYNC_REPROTECT", "1", 1);
+	TT::g_enabled = false;
+	auto pages    = std::make_unique<PageManager>();
+	auto tracker  = std::make_unique<MemoryTracker>(*pages);
+	constexpr uint64_t base    = 0x2'0000'0000ull;
+	constexpr uint64_t regions = 2;
+	constexpr uint64_t span    = regions * TRACKER_REGION_SIZE;
+	std::mutex                                   queue_mutex;
+	std::vector<MemoryTracker::DeferredProtect> queue;
+	std::atomic<bool>                            done {false};
+	std::atomic<uint64_t>                        applied {0};
+	std::thread host_copies([&] {
+		for (;;) {
+			std::vector<MemoryTracker::DeferredProtect> batch;
+			{
+				std::lock_guard lock(queue_mutex);
+				batch.swap(queue);
+			}
+			for (const auto& item: batch) RegionManager::ApplyDeferred(item.manager, item.address, item.size);
+			applied.fetch_add(batch.size());
+			if (batch.empty()) {
+				if (done.load()) break;
+				std::this_thread::yield();
+			}
+		}
+	});
+	std::vector<std::thread> workers;
+	std::atomic<uint32_t>    sync {1};
+	for (unsigned index = 0; index < threads; index++) {
+		workers.emplace_back([&, index] {
+			uint64_t state = seed * 0x9E3779B97F4A7C15ull + index * 0xBF58476D1CE4E5B9ull + 1;
+			const auto next = [&] {
+				state ^= state << 13;
+				state ^= state >> 7;
+				state ^= state << 17;
+				return state;
+			};
+			for (uint64_t round = 0; round < rounds; round++) {
+				const uint64_t page    = base + (next() % (span / TRACKER_PAGE_SIZE)) * TRACKER_PAGE_SIZE;
+				const uint64_t pages_n = 1 + next() % 24;
+				const uint64_t size    = std::min(pages_n * TRACKER_PAGE_SIZE, base + span - page);
+				switch (next() % 10) {
+					case 0:
+					case 1: (void)tracker->OpenWriteBlock(page, 64 * 1024, (next() & 1) != 0); break;
+					case 2: tracker->InvalidateRegion(page, size, [] {}); break;
+					case 3:
+					case 4: {
+						const MemoryTracker::UploadScope scope;
+						const uint32_t device_sync = (next() & 1) != 0 ? sync.fetch_add(1) : 0;
+						tracker->ForEachUploadRange(
+						    page, size, false, [](uint64_t, uint64_t) noexcept {},
+						    [&]() noexcept {
+							    auto& deferred = MemoryTracker::DeferredProtects();
+							    if (!deferred.empty() && (next() & 1) != 0) {
+								    std::lock_guard lock(queue_mutex);
+								    queue.insert(queue.end(), deferred.begin(), deferred.end());
+								    deferred.clear();
+							    }
+						    },
+						    device_sync);
+						break;
+					}
+					case 5: tracker->MarkRegionAsGpuModifiedUnlessCpuDirty(page, size, [](uint64_t, uint64_t) {}); break;
+					case 6: tracker->ForEachDownloadRange<true>(page, size, [](uint64_t, uint64_t) noexcept {}); break;
+					case 7: tracker->ConsumeCpuWrites(static_cast<CpuWriteConsumer>(next() & 1), page, size, [](uint64_t, uint64_t) {}); break;
+					case 8: (void)tracker->IsRegionCpuModified(page, size); (void)tracker->IsRegionGpuModified(page, size); break;
+					default: {
+						tracker->ForEachUploadRange(page, size, true, [](uint64_t, uint64_t) noexcept {}, []() noexcept {});
+						break;
+					}
+				}
+			}
+		});
+	}
+	for (auto& worker: workers) worker.join();
+	done.store(true);
+	host_copies.join();
+	const auto check = CheckState(*tracker, *pages);
+	std::printf("{\"implementation\": \"%s\", \"threads\": %u, \"rounds\": %" PRIu64 ", \"seed\": %" PRIu64 ", \"regions\": %" PRIu64
+	            ", \"pages\": %" PRIu64 ", \"cpu_and_gpu\": %" PRIu64 ", \"write_watch_mismatch\": %" PRIu64 ", \"access_watch_mismatch\": %" PRIu64
+	            ", \"flag_mismatch\": %" PRIu64 ", \"deferred_left\": %" PRIu64 ", \"deferred_applied_async\": %" PRIu64 "}\n",
+	            Implementation, threads, rounds, seed, check.regions, check.pages, check.both, check.write_mismatch, check.access_mismatch,
+	            check.flag_mismatch, check.deferred, applied.load());
+	(void)tracker.release();
+	(void)pages.release();
+	return (check.both | check.write_mismatch | check.access_mismatch | check.flag_mismatch | check.deferred) != 0 ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+	if (argc >= 3 && std::string(argv[1]) == "--stress") {
+		const auto threads = static_cast<unsigned>(std::strtoul(argv[2], nullptr, 10));
+		const auto rounds  = argc >= 4 ? std::strtoull(argv[3], nullptr, 10) : 100000;
+		const auto seed    = argc >= 5 ? std::strtoull(argv[4], nullptr, 10) : 1;
+		return Stress(threads, rounds, seed);
+	}
 	if (argc >= 3 && std::string(argv[1]) == "--contend") {
 		const auto threads = static_cast<unsigned>(std::strtoul(argv[2], nullptr, 10));
 		const auto rounds  = argc >= 4 ? std::strtoull(argv[3], nullptr, 10) : 200000;
