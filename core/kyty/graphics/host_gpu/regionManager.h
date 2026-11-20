@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -37,8 +38,33 @@
 
 namespace Libs::Graphics {
 
+enum class SpinLockClass : uint8_t { Other, Tracker, Pages, Textures };
+
+struct SpinLockCounters {
+	std::atomic<uint64_t> waits {0};
+	std::atomic<uint64_t> ns {0};
+};
+
 class TrackingSpinLock final {
 public:
+	static constexpr size_t CLASSES = 4;
+
+	struct Contention {
+		uint64_t waits = 0;
+		uint64_t ns    = 0;
+	};
+
+	TrackingSpinLock() noexcept = default;
+	explicit TrackingSpinLock(SpinLockClass kind) noexcept: m_class(kind) {}
+	TrackingSpinLock(const TrackingSpinLock&)            = delete;
+	TrackingSpinLock& operator=(const TrackingSpinLock&) = delete;
+
+	[[nodiscard]] static Contention TakeContention(SpinLockClass kind) noexcept {
+		auto& counters = s_contention[static_cast<size_t>(kind)];
+		return {.waits = counters.waits.exchange(0, std::memory_order_relaxed),
+		        .ns    = counters.ns.exchange(0, std::memory_order_relaxed)};
+	}
+
 	void lock() noexcept {
 		const auto thread = CurrentThread();
 		if (m_state.exchange(1, std::memory_order_acquire) != 0) [[unlikely]] {
@@ -90,6 +116,7 @@ private:
 #endif
 	void LockSlow(uint32_t thread) noexcept {
 		const bool own_core = Common::Thread::HasReservedCore();
+		const auto started  = std::chrono::steady_clock::now();
 		for (uint32_t round = 0;; round++) {
 			EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) == thread);
 			if (round < SpinRounds || own_core) {
@@ -101,6 +128,12 @@ private:
 			}
 			if (m_state.load(std::memory_order_relaxed) == 0 &&
 			    m_state.exchange(1, std::memory_order_acquire) == 0) {
+				const auto waited = std::chrono::steady_clock::now() - started;
+				auto&      counters = s_contention[static_cast<size_t>(m_class)];
+				counters.waits.fetch_add(1, std::memory_order_relaxed);
+				counters.ns.fetch_add(
+				    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count()),
+				    std::memory_order_relaxed);
 				return;
 			}
 		}
@@ -137,9 +170,12 @@ private:
 #endif
 	}
 
+	inline static std::array<SpinLockCounters, CLASSES> s_contention {};
+
 	std::atomic_uint32_t m_state {0};
 	std::atomic_uint32_t m_owner {0};
 	std::atomic_uint32_t m_sleepers {0};
+	SpinLockClass        m_class = SpinLockClass::Other;
 };
 
 static_assert(std::atomic_uint32_t::is_always_lock_free);
@@ -438,7 +474,7 @@ public:
 		return m_has_gpu_dirty.load(std::memory_order_acquire);
 	}
 
-	TrackingSpinLock lock;
+	TrackingSpinLock lock {SpinLockClass::Tracker};
 
 private:
 	void NoteOpenedUpload(const RegionBits* uploaded, const RegionBits& cleaned) {

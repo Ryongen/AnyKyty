@@ -637,6 +637,20 @@ void BufferCache::LogWriteBlockSummary() {
 	const auto buffer   = stats.buffer.exchange(0, std::memory_order_relaxed);
 	const auto other    = stats.other.exchange(0, std::memory_order_relaxed);
 	const auto opened   = RegionManager::TakeOpenedUploadBytes();
+	const auto tracker  = TrackingSpinLock::TakeContention(SpinLockClass::Tracker);
+	const auto pagelock = TrackingSpinLock::TakeContention(SpinLockClass::Pages);
+	const auto textures = TrackingSpinLock::TakeContention(SpinLockClass::Textures);
+	const auto others   = TrackingSpinLock::TakeContention(SpinLockClass::Other);
+	const auto seconds  = static_cast<double>(now - last) / 1e9;
+	if (tracker.waits + pagelock.waits + textures.waits + others.waits != 0) {
+		::Log::WriteToConsoleAndLog(fmt::format(
+		    "[kyty-locks] summary of the last {:.0f} s: contended acquisitions of a TrackingSpinLock and time spent waiting: "
+		    "{} on tracker regions ({:.1f} ms), {} on page manager regions ({:.1f} ms), {} on the texture cache ({:.1f} ms), {} "
+		    "on others ({:.1f} ms)\n",
+		    seconds, tracker.waits, static_cast<double>(tracker.ns) / 1e6, pagelock.waits,
+		    static_cast<double>(pagelock.ns) / 1e6, textures.waits, static_cast<double>(textures.ns) / 1e6, others.waits,
+		    static_cast<double>(others.ns) / 1e6));
+	}
 	if (faults == 0 && uploaded == 0) {
 		return;
 	}
@@ -646,7 +660,7 @@ void BufferCache::LogWriteBlockSummary() {
 	    "a command buffer the CP read, {} elsewhere in a command buffer segment, {} in a block with a page the GPU wrote, {} "
 	    "watched by an image or texture, {} in a buffer of the cache, {} other; {:.1f} MiB of pages opened with a block handed "
 	    "to uploads\n",
-	    static_cast<double>(now - last) / 1e9, faults, blocks, pages, faults - std::min(faults, blocks),
+	    seconds, faults, blocks, pages, faults - std::min(faults, blocks),
 	    static_cast<double>(uploaded) / (1024.0 * 1024.0), command, segment, gpu, image, buffer, other,
 	    static_cast<double>(opened) / (1024.0 * 1024.0)));
 }
