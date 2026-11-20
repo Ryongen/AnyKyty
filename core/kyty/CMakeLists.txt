@@ -386,7 +386,7 @@ if(KYTY_THIN_LTO)
         COMMAND "${CMAKE_COMMAND}" -E rm -f "${kytyPrelinkArchive}"
         COMMAND "${CMAKE_AR}" qcD "${kytyPrelinkArchive}" "${kytyPrelinkObject}"
         COMMAND "${CMAKE_RANLIB}" -D "${kytyPrelinkArchive}"
-        DEPENDS ${KYTY_BUNDLE_TARGETS}
+        DEPENDS ${KYTY_BUNDLE_TARGETS} ${KYTY_RUST_TRACKER_ARCHIVE}
         BYPRODUCTS "${kytyPrelinkObject}"
         COMMENT "Pre-linking kyty_gpu with ThinLTO into one native object"
         VERBATIM
