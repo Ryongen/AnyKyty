@@ -8,6 +8,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/scout.h"
 #include "graphics/host_gpu/bdaDirtyRegions.h"
+#include "graphics/host_gpu/trackerTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/shader/recompiler/frontend/decode/RecordReach.h"
@@ -61,6 +62,10 @@ RenderContext::RenderContext(GraphicContext& graphics, const std::filesystem::pa
       m_texture_cache(graphics, m_command_scheduler, m_page_manager, m_buffer_cache),
       m_image_heap(*this, m_page_manager), m_pipeline_cache(graphics, &m_image_heap, shader_store) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	TrackerTrace::SetRoleQuery([]() -> uint32_t {
+		return (GuestGpu::IsGpuThread() ? 1u : 0u) | (GuestGpu::IsCommandProcessorThread() ? 2u : 0u) |
+		       (Common::Thread::IsMainThread() ? 4u : 0u);
+	});
 	m_ray_tracing = std::make_unique<RayTracing>(*this);
 #if defined(ANYPS5_KYTY)
 	m_pipeline_cache.SetRenderContext(this);
@@ -103,7 +108,8 @@ VideoOut::VideoOutDriver& RenderContext::GetVideoOut() const {
 }
 
 bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	constexpr uint64_t fault_size = 1;
+	const TrackerTrace::FaultScope fault_scope;
+	constexpr uint64_t             fault_size = 1;
 	if (access == PageFaultAccess::Execute && LibKernel::Memory::IsGuestExecutable(fault_vaddr) &&
 	    m_page_manager.AllowExecute(fault_vaddr)) {
 		return true;

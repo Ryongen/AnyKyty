@@ -12,10 +12,14 @@ thread_local std::vector<MemoryTracker::DeferredProtect> MemoryTracker::s_deferr
 #endif
 
 MemoryTracker::MemoryTracker(PageManager& page_manager): m_page_manager(page_manager) {
+	TrackerTrace::Call trace(TrackerTrace::Op::TrackerCreate, reinterpret_cast<uintptr_t>(this),
+	                         reinterpret_cast<uintptr_t>(&page_manager), AsyncReprotect());
 	m_regions = std::make_unique<std::atomic<RegionManager*>[]>(REGION_COUNT);
 }
 
-MemoryTracker::~MemoryTracker() = default;
+MemoryTracker::~MemoryTracker() {
+	TrackerTrace::Call trace(TrackerTrace::Op::TrackerDestroy, reinterpret_cast<uintptr_t>(this));
+}
 
 #if KYTY_BUILD == KYTY_BUILD_DEBUG
 void MemoryTracker::ValidateGpuDirtyPages(const RangeSet& dirty, uint64_t vaddr, uint64_t size,
@@ -71,22 +75,30 @@ RegionManager* MemoryTracker::GetOrCreateRegion(uint64_t index) {
 }
 
 bool MemoryTracker::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
-	return Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-		return manager->IsModified<DirtySource::Cpu>(offset, bytes);
+	TrackerTrace::Call trace(TrackerTrace::Op::IsRegionCpuModified, vaddr, size);
+	const bool         result = Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+        return manager->IsModified<DirtySource::Cpu>(offset, bytes);
 	});
+	trace.Result(result);
+	return result;
 }
 
 bool MemoryTracker::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
-	if (!MayBeGpuModified(vaddr, size)) {
+	TrackerTrace::Call trace(TrackerTrace::Op::IsRegionGpuModified, vaddr, size);
+	if (!MayBeGpuModifiedUntraced(vaddr, size)) {
 		ValidateRange(vaddr, size);
+		trace.Result(false);
 		return false;
 	}
-	return Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+	const bool result = Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		return manager->IsModified<DirtySource::Gpu>(offset, bytes);
 	});
+	trace.Result(result);
+	return result;
 }
 
 void MemoryTracker::MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size) {
+	TrackerTrace::Call trace(TrackerTrace::Op::MarkRegionAsCpuModified, vaddr, size);
 	Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);
 		manager->ChangeState<DirtySource::Cpu, true>(offset, bytes);
@@ -94,6 +106,7 @@ void MemoryTracker::MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 void MemoryTracker::UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
+	TrackerTrace::Call trace(TrackerTrace::Op::UnmarkRegionAsGpuModified, vaddr, size);
 	Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);
 		manager->ChangeState<DirtySource::Gpu, false>(offset, bytes);

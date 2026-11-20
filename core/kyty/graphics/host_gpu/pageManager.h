@@ -25,6 +25,8 @@ public:
 	[[nodiscard]] bool IsWatched(uint64_t vaddr) const;
 	[[nodiscard]] bool WatchedSpan(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept;
 	[[nodiscard]] bool AllowExecute(uint64_t vaddr);
+	[[nodiscard]] bool HasReadWatchersUntraced(uint64_t vaddr, uint64_t size) const noexcept;
+	[[nodiscard]] bool WatchedSpanUntraced(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept;
 
 	struct DeferredRange {
 		uint64_t address = 0, size = 0;

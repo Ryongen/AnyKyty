@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/regionManager.h"
+#include "graphics/host_gpu/trackerTrace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -29,24 +30,17 @@ public:
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool MayBeGpuModified(uint64_t vaddr, uint64_t size) const {
-		if (size == 0 || size > TRACKER_ADDRESS_SIZE || vaddr > TRACKER_ADDRESS_SIZE - size) {
-			return true;
-		}
-		const auto last = (vaddr + size - 1) / TRACKER_REGION_SIZE;
-		for (auto index = vaddr / TRACKER_REGION_SIZE; index <= last && index < REGION_COUNT;
-		     index++) {
-			const auto* manager = m_regions[index].load(std::memory_order_acquire);
-			if (manager != nullptr && manager->HasGpuDirty()) {
-				return true;
-			}
-		}
-		return false;
+		TrackerTrace::Call trace(TrackerTrace::Op::MayBeGpuModified, vaddr, size);
+		const bool         result = MayBeGpuModifiedUntraced(vaddr, size);
+		trace.Result(result);
+		return result;
 	}
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	template <typename Flush>
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {
 		static_assert(std::is_invocable_v<Flush&>);
+		TrackerTrace::Call trace(TrackerTrace::Op::InvalidateRegion, vaddr, size);
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			const bool should_flush = [&] {
 				std::scoped_lock lock(manager->lock);
@@ -57,6 +51,8 @@ public:
 				return false;
 			}();
 			if (should_flush) {
+				trace.Add(TrackerTrace::Ev::Flush, manager->CpuAddress() + offset, bytes);
+				const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Flush);
 				on_flush();
 			}
 		});
@@ -74,9 +70,15 @@ public:
 	template <bool clear, typename Func>
 	void ForEachDownloadRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		static_assert(std::is_nothrow_invocable_v<Func&, uint64_t, uint64_t>);
+		TrackerTrace::Call trace(TrackerTrace::Op::ForEachDownloadRange, vaddr, size, clear);
+		const auto         traced = [&](uint64_t address, uint64_t bytes) noexcept {
+			trace.Add(TrackerTrace::Ev::Range, address, bytes);
+			const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
+			func(address, bytes);
+		};
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			std::scoped_lock lock(manager->lock);
-			manager->ForEachModifiedRange<DirtySource::Gpu, false>(offset, bytes, func);
+			manager->ForEachModifiedRange<DirtySource::Gpu, false>(offset, bytes, traced);
 			if constexpr (clear) {
 				manager->ChangeState<DirtySource::Gpu, false>(offset, bytes);
 			}
@@ -84,15 +86,19 @@ public:
 	}
 
 	[[nodiscard]] uint32_t RegionKeptSync(uint64_t index) const {
+		TrackerTrace::Call trace(TrackerTrace::Op::RegionKeptSync, index);
 		if (index >= REGION_COUNT) {
 			EXIT("invalid memory tracker region\n");
 		}
 		const auto* manager = m_regions[index].load(std::memory_order_acquire);
-		return manager != nullptr ? manager->KeptSync() : 0;
+		const auto  result  = manager != nullptr ? manager->KeptSync() : 0;
+		trace.Result(result);
+		return result;
 	}
 
 	void NoteGuestWriteFault(uint64_t vaddr) {
-		const auto index = vaddr / TRACKER_REGION_SIZE;
+		TrackerTrace::Call trace(TrackerTrace::Op::NoteGuestWriteFault, vaddr);
+		const auto         index = vaddr / TRACKER_REGION_SIZE;
 		if (index >= REGION_COUNT) {
 			return;
 		}
@@ -103,6 +109,13 @@ public:
 	}
 
 	[[nodiscard]] RegionManager::WriteBlockProbe OpenWriteBlock(uint64_t vaddr, uint64_t block_size, bool open_block) {
+		TrackerTrace::Call trace(TrackerTrace::Op::OpenWriteBlock, vaddr, block_size, open_block);
+		const auto         probe = OpenWriteBlockUntraced(vaddr, block_size, open_block);
+		trace.Result(probe.opened, probe.gpu, probe.tracked);
+		return probe;
+	}
+
+	[[nodiscard]] RegionManager::WriteBlockProbe OpenWriteBlockUntraced(uint64_t vaddr, uint64_t block_size, bool open_block) {
 		const auto index = vaddr / TRACKER_REGION_SIZE;
 		if (index >= REGION_COUNT) {
 			return {};
@@ -125,18 +138,30 @@ public:
 	[[nodiscard]] bool IsSegmentBlock(uint64_t vaddr) const noexcept { return m_segment_blocks.Contains(vaddr); }
 
 	[[nodiscard]] bool TakeKeptPages() {
-		return m_kept_pages.exchange(false, std::memory_order_relaxed);
+		TrackerTrace::Call trace(TrackerTrace::Op::TakeKeptPages);
+		const bool         result = m_kept_pages.exchange(false, std::memory_order_relaxed);
+		trace.Result(result);
+		return result;
 	}
 
 	[[nodiscard]] uint64_t RegionCpuDirtyEpoch(uint64_t index) const {
+		TrackerTrace::Call trace(TrackerTrace::Op::RegionCpuDirtyEpoch, index);
 		if (index >= REGION_COUNT) {
 			EXIT("invalid memory tracker region\n");
 		}
 		const auto* manager = m_regions[index].load(std::memory_order_acquire);
-		return manager != nullptr ? manager->RegionCpuDirtyEpoch() : 0;
+		const auto  result  = manager != nullptr ? manager->RegionCpuDirtyEpoch() : 0;
+		trace.Result(result);
+		return result;
 	}
 
 	[[nodiscard]] uint64_t CpuModificationEpoch(uint64_t vaddr, uint64_t size) const {
+		TrackerTrace::Call trace(TrackerTrace::Op::CpuModificationEpoch, vaddr, size);
+		const auto         result = CpuModificationEpochUntraced(vaddr, size);
+		trace.Result(result);
+		return result;
+	}
+	[[nodiscard]] uint64_t CpuModificationEpochUntraced(uint64_t vaddr, uint64_t size) const {
 		if (size == 0 || !GuestRange {vaddr, size}.Valid() ||
 		    vaddr / TRACKER_REGION_SIZE != (vaddr + size - 1) / TRACKER_REGION_SIZE)
 			return 0;
@@ -144,26 +169,36 @@ public:
 		return manager == nullptr ? 0 : manager->CpuModificationEpoch();
 	}
 	[[nodiscard]] bool DeferredProtectionPending(uint64_t vaddr) const {
-		if (!GuestRange {vaddr, 1}.Valid()) return false;
-		const auto* manager = m_regions[vaddr / TRACKER_REGION_SIZE].load(std::memory_order_acquire);
-		return manager != nullptr && manager->DeferredProtectionPending();
+		TrackerTrace::Call trace(TrackerTrace::Op::DeferredProtectionPending, vaddr);
+		bool               result = false;
+		if (GuestRange {vaddr, 1}.Valid()) {
+			const auto* manager = m_regions[vaddr / TRACKER_REGION_SIZE].load(std::memory_order_acquire);
+			result              = manager != nullptr && manager->DeferredProtectionPending();
+		}
+		trace.Result(result);
+		return result;
 	}
 	void NoteHostWrite(uint64_t vaddr, uint64_t size) {
+		TrackerTrace::Call trace(TrackerTrace::Op::NoteHostWrite, vaddr, size);
 		if (size == 0 || !GuestRange {vaddr, size}.Valid()) return;
 		for (auto index = vaddr / TRACKER_REGION_SIZE; index * TRACKER_REGION_SIZE < vaddr + size; ++index)
 			if (auto* manager = m_regions[index].load(std::memory_order_acquire); manager != nullptr) manager->NoteHostWrite();
 	}
 
 	[[nodiscard]] uint64_t RegionGpuCleanEpoch(uint64_t index) const {
+		TrackerTrace::Call trace(TrackerTrace::Op::RegionGpuCleanEpoch, index);
 		if (index >= REGION_COUNT) {
 			EXIT("invalid memory tracker region\n");
 		}
 		const auto* manager = m_regions[index].load(std::memory_order_acquire);
-		return manager != nullptr ? manager->RegionGpuCleanEpoch() : 0;
+		const auto  result  = manager != nullptr ? manager->RegionGpuCleanEpoch() : 0;
+		trace.Result(result);
+		return result;
 	}
 
 	template <typename Func>
 	void ForEachCpuDirtySpan(uint64_t vaddr, uint64_t size, uint64_t max_gap, Func&& func) {
+		TrackerTrace::Call trace(TrackerTrace::Op::ForEachCpuDirtySpan, vaddr, size, max_gap);
 		ValidateRange(vaddr, size);
 		const auto                                  end = vaddr + size;
 		std::vector<std::pair<uint64_t, uint64_t>> spans;
@@ -197,11 +232,27 @@ public:
 			    [&](uint64_t address, uint64_t bytes) { add(address, address + bytes); });
 		}
 		for (const auto& [begin, finish]: spans) {
+			trace.Add(TrackerTrace::Ev::Range, begin, finish - begin);
+			const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
 			func(begin, finish - begin);
 		}
 	}
 
 	bool CopyRegionCpuDirty(uint64_t index, RegionBits& pages) {
+		TrackerTrace::Call trace(TrackerTrace::Op::CopyRegionCpuDirty, index);
+		const bool         result = CopyRegionCpuDirtyUntraced(index, pages);
+		trace.Result(result);
+		if (trace.Active() && result) {
+			uint64_t words[TRACKER_REGION_PAGES / 64] = {};
+			for (size_t page = 0; page < TRACKER_REGION_PAGES; page++) {
+				words[page / 64] |= static_cast<uint64_t>(pages.Get(page)) << (page % 64);
+			}
+			TrackerTrace::Event(TrackerTrace::Ev::Bits, words, TRACKER_REGION_PAGES / 64);
+		}
+		return result;
+	}
+
+	bool CopyRegionCpuDirtyUntraced(uint64_t index, RegionBits& pages) {
 		if (index >= REGION_COUNT) {
 			EXIT("invalid memory tracker region\n");
 		}
@@ -219,6 +270,7 @@ public:
 
 	template <typename Func>
 	void ConsumeCpuWrites(CpuWriteConsumer consumer, uint64_t vaddr, uint64_t size, Func&& func) {
+		TrackerTrace::Call trace(TrackerTrace::Op::ConsumeCpuWrites, static_cast<uint32_t>(consumer), vaddr, size);
 		std::vector<std::pair<uint64_t, uint64_t>> runs;
 		Iterate<true>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			std::scoped_lock lock(manager->lock);
@@ -237,6 +289,8 @@ public:
 			const auto begin  = std::max(address, vaddr);
 			const auto finish = std::min(address + length, end);
 			if (begin < finish) {
+				trace.Add(TrackerTrace::Ev::Range, begin, finish - begin);
+				const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
 				func(begin, finish - begin);
 			}
 		}
@@ -244,6 +298,7 @@ public:
 
 	template <typename Func>
 	void MarkRegionAsGpuModifiedUnlessCpuDirty(uint64_t vaddr, uint64_t size, Func&& func) {
+		TrackerTrace::Call trace(TrackerTrace::Op::MarkRegionAsGpuModifiedUnlessCpuDirty, vaddr, size);
 		std::vector<std::pair<uint64_t, uint64_t>> runs;
 		Iterate<true>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			std::scoped_lock lock(manager->lock);
@@ -252,6 +307,8 @@ public:
 			    [&](uint64_t address, uint64_t length) { runs.emplace_back(address, length); });
 		});
 		for (const auto& [address, length]: runs) {
+			trace.Add(TrackerTrace::Ev::Range, address, length);
+			const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
 			func(address, length);
 		}
 	}
@@ -261,7 +318,13 @@ public:
 	                        UploadFunc&& upload_func, uint32_t device_sync = 0) {
 		static_assert(std::is_nothrow_invocable_v<RangeFunc&, uint64_t, uint64_t>);
 		static_assert(std::is_nothrow_invocable_v<UploadFunc&>);
-		const bool defer = !is_written && DeferProtections();
+		const bool         defer = !is_written && DeferProtections();
+		TrackerTrace::Call trace(TrackerTrace::Op::ForEachUploadRange, vaddr, size, is_written, device_sync, defer);
+		const auto         traced = [&](uint64_t address, uint64_t bytes) noexcept {
+			trace.Add(TrackerTrace::Ev::Range, address, bytes);
+			const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
+			range_func(address, bytes);
+		};
 		Iterate<true>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			if (!is_written && (!manager->HasCpuDirty() ||
 			                    !manager->IsModified<DirtySource::Cpu>(offset, bytes))) {
@@ -273,7 +336,7 @@ public:
 				DeferScope deferred(defer, manager);
 				if (manager->ConsumeCpuDirtyRangesKeepingBusy(
 				        std::span(&range, 1), device_sync,
-				        [&](size_t, uint64_t address, uint64_t run) noexcept { range_func(address, run); })) {
+				        [&](size_t, uint64_t address, uint64_t run) noexcept { traced(address, run); })) {
 					m_kept_pages.store(true, std::memory_order_relaxed);
 				}
 				return;
@@ -281,13 +344,13 @@ public:
 			manager->lock.lock();
 			{
 				DeferScope deferred(defer, manager);
-				manager->ForEachModifiedRange<DirtySource::Cpu, true>(offset, bytes, range_func);
+				manager->ForEachModifiedRange<DirtySource::Cpu, true>(offset, bytes, traced);
 			}
 			if (!is_written) {
 				manager->lock.unlock();
 			}
 		});
-		upload_func();
+		TracedUpload(trace, upload_func);
 		ApplyDeferredProtections();
 		if (is_written) {
 			Iterate<false>(vaddr, size,
@@ -304,7 +367,13 @@ public:
 	                         uint32_t device_sync = 0) {
 		static_assert(std::is_nothrow_invocable_v<RangeFunc&, size_t, uint64_t, uint64_t>);
 		static_assert(std::is_nothrow_invocable_v<UploadFunc&>);
-		const bool defer = DeferProtections();
+		const bool         defer = DeferProtections();
+		TrackerTrace::Call trace(TrackerTrace::Op::ForEachUploadRanges, ranges.size(), device_sync, defer);
+		if (trace.Active()) {
+			for (const auto& [address, bytes]: ranges) {
+				trace.Add(TrackerTrace::Ev::ArgRange, address, bytes);
+			}
+		}
 		struct Piece {
 			uint64_t region;
 			uint64_t offset;
@@ -338,6 +407,8 @@ public:
 				std::scoped_lock lock(manager->lock);
 				DeferScope       deferred(defer, manager);
 				const auto piece_func = [&](size_t piece, uint64_t address, uint64_t bytes) noexcept {
+					trace.Add(TrackerTrace::Ev::IndexedRange, pieces[first + piece].range, address, bytes);
+					const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Range);
 					range_func(pieces[first + piece].range, address, bytes);
 				};
 				const std::span<const std::pair<uint64_t, uint64_t>> region_ranges(offsets);
@@ -350,7 +421,7 @@ public:
 			}
 			first = last;
 		}
-		upload_func();
+		TracedUpload(trace, upload_func);
 		ApplyDeferredProtections();
 	}
 
@@ -386,6 +457,32 @@ private:
 	inline static thread_local std::vector<DeferredProtect> s_deferred;
 #endif
 	[[nodiscard]] static bool DeferProtections() noexcept { return s_upload_takes_protections && AsyncReprotect(); }
+	template <typename UploadFunc>
+	static void TracedUpload(TrackerTrace::Call& trace, UploadFunc& upload_func) noexcept {
+		if (!trace.Active()) [[likely]] {
+			upload_func();
+			return;
+		}
+		const auto before = s_deferred.size();
+		{
+			const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Upload);
+			upload_func();
+		}
+		trace.Add(TrackerTrace::Ev::DeferredTaken, before, s_deferred.size());
+	}
+	[[nodiscard]] bool MayBeGpuModifiedUntraced(uint64_t vaddr, uint64_t size) const {
+		if (size == 0 || size > TRACKER_ADDRESS_SIZE || vaddr > TRACKER_ADDRESS_SIZE - size) {
+			return true;
+		}
+		const auto last = (vaddr + size - 1) / TRACKER_REGION_SIZE;
+		for (auto index = vaddr / TRACKER_REGION_SIZE; index <= last && index < REGION_COUNT; index++) {
+			const auto* manager = m_regions[index].load(std::memory_order_acquire);
+			if (manager != nullptr && manager->HasGpuDirty()) {
+				return true;
+			}
+		}
+		return false;
+	}
 	struct DeferScope {
 		RegionManager*                          manager = nullptr;
 		std::vector<PageManager::DeferredRange> ranges;

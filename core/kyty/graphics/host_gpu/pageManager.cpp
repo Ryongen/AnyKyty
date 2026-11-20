@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/hotWriteWatch.h"
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "graphics/host_gpu/regionManager.h"
+#include "graphics/host_gpu/trackerTrace.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -74,6 +75,12 @@ constexpr uint64_t HOT_CLUSTER_GAP    = 1024 * 1024;
 using SpinGuard = std::lock_guard<TrackingSpinLock>;
 
 thread_local std::vector<PageManager::DeferredRange>* g_deferred_write_protect = nullptr;
+
+uint64_t TracedNow() noexcept {
+	const auto now = Common::SteadyNs();
+	TrackerTrace::Event(TrackerTrace::Ev::Time, now);
+	return now;
+}
 
 void ValidateRange(uint64_t vaddr, uint64_t size) {
 	if (!GuestRange {vaddr, size}.Valid()) {
@@ -203,6 +210,7 @@ struct PageManager::Impl {
 		                  : mode == Common::VirtualMemory::Mode::NoAccess  ? 2
 		                                                                   : 3;
 		protects[kind].fetch_add(1, std::memory_order_relaxed);
+		TrackerTrace::Event(TrackerTrace::Ev::Protect, vaddr, size, static_cast<uint32_t>(mode));
 		if (!Libs::LibKernel::Memory::ProtectGuestHostMemory(vaddr, size, mode)) {
 			Fatal("address-space protection failed at 0x%016" PRIx64 ", mode=0x%08" PRIx32, vaddr,
 			      static_cast<uint32_t>(mode));
@@ -221,6 +229,7 @@ struct PageManager::Impl {
 		const auto release_pending = [&] {
 			if (range_bytes != 0) {
 				if (track && !is_read && g_deferred_write_protect != nullptr) {
+					TrackerTrace::Event(TrackerTrace::Ev::DeferProtect, base_addr + range_begin * PAGE_SIZE, range_bytes);
 					g_deferred_write_protect->push_back({base_addr + range_begin * PAGE_SIZE, range_bytes});
 				} else {
 					Protect(base_addr + range_begin * PAGE_SIZE, range_bytes, perms);
@@ -461,6 +470,12 @@ struct PageManager::Impl {
 		              writable, no_access, other, hot_page_total.load(std::memory_order_relaxed),
 		              hot_run_total.load(std::memory_order_relaxed), scans, scoped, static_cast<double>(scan_ns) / 1e9, collected,
 		              promoted, idle, lost, refused);
+		if (TrackerTrace::Enabled()) {
+			const uint64_t values[] = {now_ns - last, faults, read_only, writable, no_access, other,
+			                           hot_page_total.load(std::memory_order_relaxed), hot_run_total.load(std::memory_order_relaxed),
+			                           scans, scoped, scan_ns, collected, promoted, idle, lost, refused};
+			TrackerTrace::Event(TrackerTrace::Ev::HotLog, values, std::size(values));
+		}
 		Log::WriteToConsoleAndLog(line);
 	}
 
@@ -498,10 +513,13 @@ struct PageManager::Impl {
 static_assert(std::atomic<void*>::is_always_lock_free);
 
 PageManager::PageManager(): m_impl(std::make_unique<Impl>()) {
-	(void)HotPagesEnabled();
+	TrackerTrace::Call trace(TrackerTrace::Op::PageManagerCreate, reinterpret_cast<uintptr_t>(this), HotPagesEnabled());
 }
 
-PageManager::~PageManager() = default;
+PageManager::~PageManager() {
+	TrackerTrace::Call trace(TrackerTrace::Op::PageManagerDestroy, reinterpret_cast<uintptr_t>(this));
+	m_impl.reset();
+}
 
 const std::atomic<uint64_t>* PageManager::ReadGranules() const noexcept {
 	static_assert(READ_GRANULE_SIZE == uint64_t {1} << READ_GRANULE_BITS);
@@ -509,6 +527,13 @@ const std::atomic<uint64_t>* PageManager::ReadGranules() const noexcept {
 }
 
 bool PageManager::HasReadWatchers(uint64_t vaddr, uint64_t size) const noexcept {
+	TrackerTrace::Call trace(TrackerTrace::Op::HasReadWatchers, vaddr, size);
+	const bool         result = HasReadWatchersUntraced(vaddr, size);
+	trace.Result(result);
+	return result;
+}
+
+bool PageManager::HasReadWatchersUntraced(uint64_t vaddr, uint64_t size) const noexcept {
 	if (!GuestRange {vaddr, size}.Valid()) return false;
 	if (!m_impl->MayHaveReadWatchers(vaddr, vaddr + size - 1)) return false;
 	const auto end = Common::AlignDown(vaddr + size - 1, PAGE_SIZE);
@@ -522,16 +547,27 @@ bool PageManager::HasReadWatchers(uint64_t vaddr, uint64_t size) const noexcept 
 }
 
 bool PageManager::IsWatched(uint64_t vaddr) const {
-	auto* region = m_impl->FindRegion(vaddr);
+	TrackerTrace::Call trace(TrackerTrace::Op::IsWatched, vaddr);
+	auto*              region = m_impl->FindRegion(vaddr);
 	if (region == nullptr) {
+		trace.Result(false);
 		return false;
 	}
 	const auto page = static_cast<size_t>((vaddr % REGION_SIZE) / PAGE_SIZE);
 	SpinGuard  lock(region->lock);
-	return region->pages[page].write_watchers != 0 || region->pages[page].access_watchers != 0;
+	const bool result = region->pages[page].write_watchers != 0 || region->pages[page].access_watchers != 0;
+	trace.Result(result);
+	return result;
 }
 
 bool PageManager::WatchedSpan(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept {
+	TrackerTrace::Call trace(TrackerTrace::Op::WatchedSpan, vaddr, size);
+	const bool         result = WatchedSpanUntraced(vaddr, size, first, end);
+	trace.Result(result, result ? *first : 0, result ? *end : 0);
+	return result;
+}
+
+bool PageManager::WatchedSpanUntraced(uint64_t vaddr, uint64_t size, uint64_t* first, uint64_t* end) const noexcept {
 	bool           any  = false;
 	const uint64_t stop = UINT64_MAX - vaddr < size ? UINT64_MAX : vaddr + size;
 	for (uint64_t at = Common::AlignDown(vaddr, PAGE_SIZE); at < stop && at < ADDRESS_SIZE;) {
@@ -552,20 +588,26 @@ bool PageManager::WatchedSpan(uint64_t vaddr, uint64_t size, uint64_t* first, ui
 }
 
 bool PageManager::AllowExecute(uint64_t vaddr) {
-	using Mode   = Common::VirtualMemory::Mode;
-	auto* region = m_impl->FindRegion(vaddr);
+	using Mode = Common::VirtualMemory::Mode;
+	TrackerTrace::Call trace(TrackerTrace::Op::AllowExecute, vaddr);
+	auto*              region = m_impl->FindRegion(vaddr);
 	if (region == nullptr) {
+		trace.Result(false);
 		return false;
 	}
 	const auto page = static_cast<size_t>((vaddr % REGION_SIZE) / PAGE_SIZE);
 	SpinGuard  lock(region->lock);
 	const auto perms = region->pages[page].Perms();
 	if (perms == Mode::NoAccess) {
+		trace.Result(false);
 		return false;
 	}
-	return Libs::LibKernel::Memory::ProtectGuestHostMemory(
-	    Common::AlignDown(vaddr, PAGE_SIZE), PAGE_SIZE,
-	    static_cast<Mode>(static_cast<uint32_t>(perms) | static_cast<uint32_t>(Mode::Execute)));
+	const auto mode = static_cast<Mode>(static_cast<uint32_t>(perms) | static_cast<uint32_t>(Mode::Execute));
+	TrackerTrace::Event(TrackerTrace::Ev::Protect, Common::AlignDown(vaddr, PAGE_SIZE), PAGE_SIZE, static_cast<uint32_t>(mode));
+	const bool result = Libs::LibKernel::Memory::ProtectGuestHostMemory(Common::AlignDown(vaddr, PAGE_SIZE), PAGE_SIZE, mode);
+	TrackerTrace::Event(TrackerTrace::Ev::ProtectResult, result);
+	trace.Result(result);
+	return result;
 }
 
 void PageManager::SetDeferredWriteProtectSink(std::vector<DeferredRange>* sink) noexcept {
@@ -578,6 +620,7 @@ void PageManager::ReapplyProtection(uint64_t vaddr, uint64_t size) {
 
 template <bool track, bool is_read>
 void PageManager::UpdatePageWatchers(uint64_t vaddr, uint64_t size) {
+	TrackerTrace::Call trace(TrackerTrace::Op::UpdatePageWatchers, vaddr, size, track, is_read);
 	m_impl->UpdatePageWatchers<track, is_read>(vaddr, size);
 }
 
@@ -620,11 +663,12 @@ bool PageManager::HotPagesEnabled() noexcept {
 }
 
 void PageManager::NoteWriteFault(uint64_t vaddr) {
-	auto& impl = *m_impl;
+	TrackerTrace::Call trace(TrackerTrace::Op::NoteWriteFault, vaddr);
+	auto&              impl = *m_impl;
 	impl.guest_write_faults.fetch_add(1, std::memory_order_relaxed);
 	if (!HotPagesEnabled() || !GuestRange {vaddr, 1}.Valid()) return;
 	const auto page   = Common::AlignDown(vaddr, PAGE_SIZE);
-	const auto window = static_cast<uint8_t>(Common::SteadyNs() / HOT_WINDOW_NS);
+	const auto window = static_cast<uint8_t>(TracedNow() / HOT_WINDOW_NS);
 	Impl::Region* region = nullptr;
 	auto*         state  = impl.FindPage(page, &region);
 	if (state == nullptr) return;
@@ -663,15 +707,16 @@ void PageManager::NoteWriteFault(uint64_t vaddr) {
 }
 
 void PageManager::CollectHotPageWrites(HotPageWritten written, void* context, uint64_t vaddr, uint64_t size) {
-	auto&      impl   = *m_impl;
-	const bool scoped = size != 0;
-	if (!scoped) impl.LogHotSummary(Common::SteadyNs());
+	TrackerTrace::Call trace(TrackerTrace::Op::CollectHotPageWrites, vaddr, size);
+	auto&              impl   = *m_impl;
+	const bool         scoped = size != 0;
+	if (!scoped) impl.LogHotSummary(TracedNow());
 	if (!impl.hot_any.load(std::memory_order_acquire)) return;
 	if (scoped && (vaddr > UINT64_MAX - size || !impl.MayHaveHotPages(vaddr, size))) return;
 	std::vector<uint64_t> reported;
 	std::vector<uint64_t> lost;
 	std::vector<uint64_t> idle;
-	const auto  started = Common::SteadyNs();
+	const auto  started = TracedNow();
 	const auto  now     = static_cast<uint32_t>(started / 1'000'000'000);
 	const auto& watch   = HotWriteWatch::Get();
 	const auto  push    = [](void* pages, uint64_t begin, uint64_t end) {
@@ -736,7 +781,7 @@ void PageManager::CollectHotPageWrites(HotPageWritten written, void* context, ui
 		impl.hot_idle.fetch_add(idle.size(), std::memory_order_relaxed);
 		impl.hot_collected.fetch_add(reported.size() + lost.size(), std::memory_order_relaxed);
 		(scoped ? impl.hot_scoped_scans : impl.hot_scans).fetch_add(1, std::memory_order_relaxed);
-		impl.hot_scan_ns.fetch_add(Common::SteadyNs() - started, std::memory_order_relaxed);
+		impl.hot_scan_ns.fetch_add(TracedNow() - started, std::memory_order_relaxed);
 	}
 	for (const auto page: lost) {
 		impl.Demote(page, true);
@@ -751,29 +796,38 @@ void PageManager::CollectHotPageWrites(HotPageWritten written, void* context, ui
 	if (reported.empty()) return;
 	std::sort(reported.begin(), reported.end());
 	reported.erase(std::unique(reported.begin(), reported.end()), reported.end());
-	auto begin = reported.front();
-	auto end   = begin + PAGE_SIZE;
+	auto       begin   = reported.front();
+	auto       end     = begin + PAGE_SIZE;
+	const auto deliver = [&](uint64_t from, uint64_t to) {
+		trace.Add(TrackerTrace::Ev::Range, from, to - from);
+		const TrackerTrace::Call::Window window(trace, TrackerTrace::Callback::Hot);
+		written(context, from, to);
+	};
 	for (size_t i = 1; i < reported.size(); i++) {
 		if (reported[i] != end) {
-			written(context, begin, end);
+			deliver(begin, end);
 			begin = reported[i];
 		}
 		end = reported[i] + PAGE_SIZE;
 	}
-	written(context, begin, end);
+	deliver(begin, end);
 }
 
 bool PageManager::HasHotPages() const noexcept {
-	return m_impl->hot_any.load(std::memory_order_acquire);
+	TrackerTrace::Call trace(TrackerTrace::Op::HasHotPages);
+	const bool         result = m_impl->hot_any.load(std::memory_order_acquire);
+	trace.Result(result);
+	return result;
 }
 
 void PageManager::ForgetHotPages(uint64_t vaddr, uint64_t size) {
-	auto& impl = *m_impl;
+	TrackerTrace::Call trace(TrackerTrace::Op::ForgetHotPages, vaddr, size);
+	auto&              impl = *m_impl;
 	if (!impl.hot_any.load(std::memory_order_acquire) || size == 0 || vaddr > UINT64_MAX - size) return;
 	std::vector<uint64_t> pages;
 	{
 		std::lock_guard lock(impl.hot_mutex);
-		impl.MergePendingHotPages(static_cast<uint32_t>(Common::SteadyNs() / 1'000'000'000));
+		impl.MergePendingHotPages(static_cast<uint32_t>(TracedNow() / 1'000'000'000));
 		for (auto it = impl.hot_pages.lower_bound(Common::AlignDown(vaddr, PAGE_SIZE));
 		     it != impl.hot_pages.end() && it->first < vaddr + size;) {
 			pages.push_back(it->first);

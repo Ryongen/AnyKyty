@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "graphics/host_gpu/bdaDirtyRegions.h"
+#include "graphics/host_gpu/trackerTrace.h"
 
 #include <algorithm>
 #include <array>
@@ -192,8 +193,13 @@ public:
 	}
 
 	[[nodiscard]] static uint64_t CpuDirtyEpoch() {
-		return s_cpu_dirty_epoch.load(std::memory_order_acquire);
+		TrackerTrace::Call trace(TrackerTrace::Op::CpuDirtyEpoch);
+		const auto         result = s_cpu_dirty_epoch.load(std::memory_order_acquire);
+		trace.Result(result);
+		return result;
 	}
+
+	[[nodiscard]] uint64_t CpuAddress() const noexcept { return m_cpu_addr; }
 
 	[[nodiscard]] uint64_t RegionCpuDirtyEpoch() const {
 		return m_cpu_dirty_epoch.load(std::memory_order_acquire);
@@ -209,6 +215,7 @@ public:
 		return m_deferred_protects.load(std::memory_order_acquire) != 0;
 	}
 	void ApplyDeferredProtection(uint64_t vaddr, uint64_t size) {
+		TrackerTrace::Call trace(TrackerTrace::Op::ApplyDeferredProtection, m_cpu_addr / TRACKER_REGION_SIZE, vaddr, size);
 		m_page_manager.ReapplyProtection(vaddr, size);
 		m_host_write_epoch.fetch_add(1, std::memory_order_acq_rel);
 		m_deferred_protects.fetch_sub(1, std::memory_order_acq_rel);
@@ -216,7 +223,10 @@ public:
 	void NoteHostWrite() noexcept { m_host_write_epoch.fetch_add(1, std::memory_order_release); }
 
 	[[nodiscard]] static uint64_t GpuCleanEpoch() {
-		return s_gpu_clean_epoch.load(std::memory_order_acquire);
+		TrackerTrace::Call trace(TrackerTrace::Op::GpuCleanEpoch);
+		const auto         result = s_gpu_clean_epoch.load(std::memory_order_acquire);
+		trace.Result(result);
+		return result;
 	}
 
 	[[nodiscard]] uint64_t RegionGpuCleanEpoch() const {
@@ -267,7 +277,10 @@ public:
 	}
 
 	[[nodiscard]] static uint64_t TakeOpenedUploadBytes() noexcept {
-		return s_opened_upload_bytes.exchange(0, std::memory_order_relaxed);
+		TrackerTrace::Call trace(TrackerTrace::Op::TakeOpenedUploadBytes);
+		const auto         result = s_opened_upload_bytes.exchange(0, std::memory_order_relaxed);
+		trace.Result(result);
+		return result;
 	}
 
 	template <DirtySource source, bool enable>
@@ -292,6 +305,7 @@ public:
 				}
 				m_cpu_dirty_epoch.fetch_add(1, std::memory_order_acq_rel);
 				s_cpu_dirty_epoch.fetch_add(1, std::memory_order_acq_rel);
+				TrackerTrace::Event(TrackerTrace::Ev::BdaMark, m_cpu_addr / TRACKER_REGION_SIZE, BdaDirtyRegions::g_translating);
 				BdaDirtyRegions::Mark(m_cpu_addr / TRACKER_REGION_SIZE);
 			}
 			if constexpr (!enable) {
