@@ -41,6 +41,19 @@ mod imp {
         unsafe { syscall(SYS_GETTID) as u32 }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    pub fn thread_token() -> u64 {
+        let token: u64;
+        unsafe { core::arch::asm!("mov {}, fs:[0]", out(reg) token, options(nostack, preserves_flags, readonly, pure)) };
+        token
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn thread_token() -> u64 {
+        thread_id() as u64
+    }
+
     pub fn sleep_while_held(_state: &core::sync::atomic::AtomicU32) {
         unsafe {
             sched_yield();
@@ -88,6 +101,13 @@ mod imp {
 
     pub fn thread_id() -> u32 {
         unsafe { GetCurrentThreadId() }
+    }
+
+    #[inline(always)]
+    pub fn thread_token() -> u64 {
+        let token: u64;
+        unsafe { core::arch::asm!("mov {}, gs:[0x30]", out(reg) token, options(nostack, preserves_flags, readonly, pure)) };
+        token
     }
 
     pub fn sleep_while_held(state: &core::sync::atomic::AtomicU32) {

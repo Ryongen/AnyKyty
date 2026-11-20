@@ -653,7 +653,128 @@ bool HotCollect(uint64_t begin, uint64_t end, void (*written)(void*, uint64_t, u
 
 }
 
+void Profile(const Trace& trace, const Index& index) {
+	std::unordered_map<uint32_t, std::string> names;
+	std::unordered_map<uint32_t, uint64_t>    roles;
+	for (size_t at = 8; at < trace.count;) {
+		if (!Valid(trace.words + at, trace.count - at)) {
+			at++;
+			continue;
+		}
+		const auto view = Decode(trace.words + at);
+		if (view.op == static_cast<uint8_t>(TT::Op::Thread)) {
+			char name[17] = {};
+			std::memcpy(name, view.base + TT::RecordFixedWords + 2, 16);
+			std::string text(name);
+			for (auto& c: text)
+				if (c >= '0' && c <= '9') c = '#';
+			names[static_cast<uint32_t>(view.Arg(0))] = text;
+			roles[static_cast<uint32_t>(view.Arg(0))] = view.Arg(1);
+		}
+		at += view.total;
+	}
+	struct Cell {
+		uint64_t count = 0, faults = 0, nested = 0, ns = 0, protects = 0, bda = 0;
+	};
+	std::map<std::pair<uint8_t, std::string>, Cell> cells;
+	uint64_t first = UINT64_MAX, last = 0;
+	const auto add = [&](uint64_t offset, bool nested) {
+		const auto view = Decode(trace.words + offset);
+		const auto tid  = view.Tid();
+		auto       name = names.contains(tid) ? names[tid] : std::string("?");
+		const auto role = roles.contains(tid) ? roles[tid] : 0;
+		if (role & 1) name += "[gpu]";
+		if (role & 2) name += "[cp]";
+		if (role & 4) name += "[main]";
+		auto& cell = cells[{view.op, name}];
+		cell.count++;
+		cell.faults += (view.Flags() & 1u) != 0;
+		cell.nested += nested;
+		cell.ns += view.Duration();
+		view.ForEachEvent([&](uint8_t kind, const uint64_t*, size_t) {
+			cell.protects += kind == static_cast<uint8_t>(TT::Ev::Protect);
+			cell.bda += kind == static_cast<uint8_t>(TT::Ev::BdaMark);
+		});
+		first = std::min(first, view.Start());
+		last  = std::max(last, view.Start() + view.Duration());
+	};
+	for (const auto& [seq, offset]: index.top) add(offset, false);
+	for (const auto& entry: index.nested) add(std::get<2>(entry), true);
+	std::printf("{\"seconds\": %.1f, \"calls\": [", static_cast<double>(last - first) / 1e9);
+	bool comma = false;
+	for (const auto& [key, cell]: cells) {
+		std::printf("%s\n{\"op\": %u, \"thread\": \"%s\", \"count\": %" PRIu64 ", \"faults\": %" PRIu64 ", \"nested\": %" PRIu64
+		            ", \"ns\": %" PRIu64 ", \"protects\": %" PRIu64 ", \"bda\": %" PRIu64 "}",
+		            comma ? "," : "", key.first, key.second.c_str(), cell.count, cell.faults, cell.nested, cell.ns, cell.protects, cell.bda);
+		comma = true;
+	}
+	std::printf("]}\n");
+}
+
+int Contend(unsigned threads, uint64_t rounds) {
+	::setenv("KYTY_ASYNC_REPROTECT", "1", 1);
+	TT::g_enabled = false;
+	auto pages    = std::make_unique<PageManager>();
+	auto tracker  = std::make_unique<MemoryTracker>(*pages);
+	constexpr uint64_t base    = 0x2'0000'0000ull;
+	constexpr uint64_t regions = 4;
+	for (uint64_t region = 0; region < regions; region++) {
+		const auto address = base + region * TRACKER_REGION_SIZE;
+		tracker->ForEachUploadRange(address, TRACKER_REGION_SIZE, false, [](uint64_t, uint64_t) noexcept {}, []() noexcept {});
+	}
+	std::atomic<unsigned> ready {0};
+	std::atomic<bool>     go {false};
+	std::vector<uint64_t> cycles(threads, 0);
+	std::vector<std::thread> workers;
+	for (unsigned index = 0; index < threads; index++) {
+		workers.emplace_back([&, index] {
+			ready.fetch_add(1);
+			while (!go.load()) std::this_thread::yield();
+			const auto     t0      = __rdtsc();
+			const uint64_t per     = TRACKER_REGION_PAGES * regions / threads;
+			for (uint64_t round = 0; round < rounds; round++) {
+				const uint64_t slot = index + threads * (round % per);
+				const uint64_t page = base + slot * TRACKER_PAGE_SIZE;
+				(void)tracker->OpenWriteBlock(page, 64 * 1024, false);
+				(void)tracker->IsRegionCpuModified(page, TRACKER_PAGE_SIZE);
+				tracker->InvalidateRegion(page, TRACKER_PAGE_SIZE, [] {});
+				(void)tracker->MayBeGpuModified(page, TRACKER_PAGE_SIZE);
+				tracker->ForEachUploadRange(page, TRACKER_PAGE_SIZE, false, [](uint64_t, uint64_t) noexcept {}, []() noexcept {});
+			}
+			cycles[index] = __rdtsc() - t0;
+		});
+	}
+	while (ready.load() != threads) std::this_thread::yield();
+	const auto started = std::chrono::steady_clock::now();
+	const auto c0      = __rdtsc();
+	go.store(true);
+	for (auto& worker: workers) worker.join();
+	const auto wall = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count();
+	const auto ghz  = static_cast<double>(__rdtsc() - c0) / wall;
+	uint64_t   sum  = 0;
+	for (const auto value: cycles) sum += value;
+	const double per_cycle = static_cast<double>(sum) / ghz / static_cast<double>(threads * rounds);
+	uint64_t     waits[4] = {}, ns[4] = {};
+	for (uint32_t kind = 0; kind < 4; kind++) {
+		const auto taken = TrackingSpinLock::TakeContention(static_cast<SpinLockClass>(kind));
+		waits[kind]      = taken.waits;
+		ns[kind]         = taken.ns;
+	}
+	std::printf("{\"implementation\": \"%s\", \"threads\": %u, \"rounds\": %" PRIu64 ", \"wall_ms\": %.1f, \"ns_per_fault_cycle\": %.1f, "
+	            "\"cycles_per_second\": %.0f, \"tracker_waits\": %" PRIu64 ", \"tracker_wait_ms\": %.1f, \"pages_waits\": %" PRIu64 ", \"pages_wait_ms\": %.1f}\n",
+	            Implementation, threads, rounds, wall / 1e6, per_cycle, static_cast<double>(threads * rounds) / (wall / 1e9),
+	            waits[1], static_cast<double>(ns[1]) / 1e6, waits[2], static_cast<double>(ns[2]) / 1e6);
+	(void)tracker.release();
+	(void)pages.release();
+	return 0;
+}
+
 int main(int argc, char** argv) {
+	if (argc >= 3 && std::string(argv[1]) == "--contend") {
+		const auto threads = static_cast<unsigned>(std::strtoul(argv[2], nullptr, 10));
+		const auto rounds  = argc >= 4 ? std::strtoull(argv[3], nullptr, 10) : 200000;
+		return Contend(threads, rounds);
+	}
 	if (argc < 2) {
 		std::fprintf(stderr, "usage: %s <trace> [--out <file>] [--bench] [--digest-every N] [--limit N] [--skip-gaps] [--stats] [--hot]\n", argv[0]);
 		return 2;
@@ -663,6 +784,7 @@ int main(int argc, char** argv) {
 	bool        skip_gaps    = false;
 	bool        stats_only   = false;
 	bool        apply_taken  = false;
+	bool        profile      = false;
 	uint64_t    digest_every = 0;
 	uint64_t    limit        = UINT64_MAX;
 	for (int arg = 2; arg < argc; arg++) {
@@ -673,6 +795,7 @@ int main(int argc, char** argv) {
 		else if (option == "--stats") stats_only = true;
 		else if (option == "--hot") g_hot = true;
 		else if (option == "--apply-taken") apply_taken = true;
+		else if (option == "--profile") profile = true;
 		else if (option == "--digest-every" && arg + 1 < argc) digest_every = std::strtoull(argv[++arg], nullptr, 10);
 		else if (option == "--limit" && arg + 1 < argc) limit = std::strtoull(argv[++arg], nullptr, 10);
 	}
@@ -686,6 +809,10 @@ int main(int argc, char** argv) {
 	             Implementation, index.records, index.top.size(), index.nested.size(), index.threads, index.loose, index.skipped,
 	             index.overflows, index.max_seq, index.stop);
 	if (stats_only) return 0;
+	if (profile) {
+		Profile(trace, index);
+		return 0;
+	}
 	for (const auto& [seq, offset]: index.top) {
 		const auto view = Decode(trace.words + offset);
 		if (view.op == static_cast<uint8_t>(TT::Op::TrackerCreate)) {

@@ -1,6 +1,6 @@
 use crate::host::{self, Fatal};
 use crate::os;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -32,29 +32,16 @@ pub fn take_contention(class: usize) -> (u64, u64) {
     (counters.waits.swap(0, Ordering::Relaxed), counters.ns.swap(0, Ordering::Relaxed))
 }
 
-thread_local! {
-    static THREAD: Cell<u32> = const { Cell::new(0) };
-}
-
 #[inline]
-pub fn current_thread() -> u32 {
-    THREAD.with(|cell| {
-        let id = cell.get();
-        if id != 0 {
-            id
-        } else {
-            let id = os::thread_id();
-            cell.set(id);
-            id
-        }
-    })
+pub fn current_thread() -> u64 {
+    os::thread_token()
 }
 
 const SPIN_ROUNDS: u32 = 4096;
 
 pub struct SpinLock<T> {
     state: AtomicU32,
-    owner: AtomicU32,
+    owner: AtomicU64,
     sleepers: AtomicU32,
     class: AtomicU8,
     value: UnsafeCell<T>,
@@ -85,13 +72,13 @@ impl<T> SpinLock<T> {
 
     #[cold]
     #[inline(never)]
-    fn lock_slow(&self, thread: u32) {
+    fn lock_slow(&self, thread: u64) {
         let own_core = (host::get().has_reserved_core)();
         let started = Instant::now();
         let mut round: u32 = 0;
         loop {
             if self.owner.load(Ordering::Relaxed) == thread {
-                host::fatal(Fatal::LockReentered, thread as u64, 0);
+                host::fatal(Fatal::LockReentered, thread, 0);
             }
             if round < SPIN_ROUNDS || own_core {
                 core::hint::spin_loop();
