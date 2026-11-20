@@ -17,7 +17,7 @@ panic = "abort"
 opt-level = 3
 debug = 1
 codegen-units = 1
-lto = "fat"
+lto = false
 
 [profile.dev]
 panic = "abort"
