@@ -17,6 +17,8 @@ pub struct KytySelfMarkStats {
     pub busy: u64,
     pub slow_faults: u64,
     pub breaks: u64,
+    pub redirect_sites: u64,
+    pub redirect_faults: u64,
     pub refusals: [u64; REFUSAL_COUNT],
 }
 
@@ -42,7 +44,7 @@ pub extern "C" fn kyty_selfmark_enabled() -> bool {
 fn fault(outcome: u32, value: u64) -> KytySelfMarkFault {
     match outcome {
         sites::OUTCOME_REFUSED => KytySelfMarkFault { outcome, reason: value as u32, entry: 0, width: 0 },
-        sites::OUTCOME_PATCHED | sites::OUTCOME_SLOW_STORE | sites::OUTCOME_INSIDE => KytySelfMarkFault { outcome, reason: 0, entry: value, width: sites::width_of(value) },
+        sites::OUTCOME_PATCHED | sites::OUTCOME_SLOW_STORE | sites::OUTCOME_INSIDE | sites::OUTCOME_REDIRECT => KytySelfMarkFault { outcome, reason: 0, entry: value, width: sites::width_of(value) },
         _ => KytySelfMarkFault { outcome, reason: 0, entry: value, width: 0 },
     }
 }
@@ -116,6 +118,8 @@ pub unsafe extern "C" fn kyty_selfmark_stats(stats: *mut KytySelfMarkStats) {
     stats.busy = sites::BUSY.load(Ordering::Relaxed);
     stats.slow_faults = sites::SLOW_FAULTS.load(Ordering::Relaxed);
     stats.breaks = sites::BREAKS.load(Ordering::Relaxed);
+    stats.redirect_sites = sites::REDIRECT_SITES.load(Ordering::Relaxed);
+    stats.redirect_faults = sites::REDIRECT_FAULTS.load(Ordering::Relaxed);
     for (slot, counter) in stats.refusals.iter_mut().zip(sites::REFUSALS.iter()) {
         *slot = counter.load(Ordering::Relaxed);
     }

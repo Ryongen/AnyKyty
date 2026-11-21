@@ -307,9 +307,6 @@ pub unsafe fn decode_at(code: *const u8) -> Result<Store, Refusal> {
         return Err(Refusal::StackOperand);
     }
     let len = reader.read as u8;
-    if (len as usize) < PATCH_LEN {
-        return Err(Refusal::Short);
-    }
     Ok(Store {
         len,
         form,
@@ -392,11 +389,12 @@ mod tests {
     }
 
     #[test]
-    fn short_sites_keep_the_fault() {
-        assert_eq!(no(&[0xC5, 0xF9, 0xE7, 0x07]), Refusal::Short);
-        assert_eq!(no(&[0x48, 0x89, 0x17]), Refusal::Short);
-        assert_eq!(no(&[0x88, 0x0A]), Refusal::Short);
-        assert_eq!(no(&[0x42, 0x89, 0x14, 0x33]), Refusal::Short);
+    fn short_stores_decode_too() {
+        assert_eq!(ok(&[0xC5, 0xF9, 0xE7, 0x07]).len, 4);
+        assert_eq!(ok(&[0x48, 0x89, 0x17]).len, 3);
+        assert_eq!(ok(&[0x88, 0x0A]).len, 2);
+        let indexed = ok(&[0x42, 0x89, 0x14, 0x33]);
+        assert_eq!((indexed.len, indexed.base, indexed.index), (4, 3, Some(14)));
     }
 
     #[test]

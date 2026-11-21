@@ -38,6 +38,7 @@ constexpr int64_t  Displacement = 0x100;
 
 constexpr std::array<uint8_t, 8> LongStore {0x48, 0x89, 0xB7, 0x00, 0x01, 0x00, 0x00, 0xC3};
 constexpr std::array<uint8_t, 4> ShortStore {0x48, 0x89, 0x37, 0xC3};
+constexpr std::array<uint8_t, 4> AddToMemory {0x48, 0x01, 0x37, 0xC3};
 
 using Store = void (*)(uint64_t pointer, uint64_t value);
 
@@ -140,34 +141,68 @@ const char* CheckCorrectedWritesTakeNoFault(Fixture& fixture, Store store, uint6
 	return nullptr;
 }
 
-const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store unpatched, uint64_t block) {
+const char* CheckShortSiteIsServedAtItsFault(Fixture& fixture, Store store, Store shorter, uint64_t block) {
 	const auto page   = block + Page;
 	const auto target = page + Slot;
-	auto       before = g_faults.load();
-	WriteOnThread(unpatched, target + 8, 0x4444);
-	if (g_faults.load() != before + 1) return "a write site that cannot be corrected did not fault once";
-	if (*reinterpret_cast<const volatile uint8_t*>(unpatched) != ShortStore[0]) return "a short write site was modified";
-	if (Read(target + 8) != 0x4444) return "the write of an uncorrected site did not reach guest memory";
-	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page was not given back to faults after a write that cannot mark it";
+	for (uint64_t round = 0; round < 3; round++) {
+		const auto value  = 0x4440 + round;
+		const auto before = g_faults.load();
+		WriteOnThread(shorter, target + 8, value);
+		if (g_faults.load() != before + 1) return "a short write site did not fault exactly once";
+		if (*reinterpret_cast<const volatile uint8_t*>(shorter) != ShortStore[0]) return "a short write site was modified";
+		if (Read(target + 8) != value) return "the write of a short site did not reach guest memory";
+		if (kyty_selfmark_armed(page) == 0 || kyty_selfmark_armed(page) == KYTY_SELFMARK_DELTA_REFUSED) return "a short site gave the page back to faults";
+		if (!kyty_selfmark_any(page, page + Page)) return "the write of a short site left no card";
+		if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the write of a short site was reported before the synchronisation point";
+		fixture.renderer.CollectHotPageWrites();
+		if (!fixture.GpuHolds(target + 8, value)) return "the GPU buffer does not hold the write of a short site";
+	}
+	const auto before = g_faults.load();
+	std::thread loop([&] {
+		for (uint64_t round = 0; round < 256; round++) {
+			shorter(target + 8, 0x5000 + round);
+		}
+	});
+	loop.join();
+	const auto faults = g_faults.load() - before;
+	if (faults < 2 || faults > 60) return "a short site that keeps writing one page was not given the page after a few faults";
+	if (Read(target + 8) != 0x5000 + 255) return "the last write of a short site in a loop is not in guest memory";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page of a short site in a loop was not given back to faults";
 	if (kyty_selfmark_armed(page + 2 * Page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block of a page given back to faults was left marked";
-	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of an uncorrected site did not report the page at once";
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "a page given back to faults was not reported at once";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.GpuHolds(target + 8, 0x5000 + 255)) return "the GPU buffer does not hold the last write of a short site in a loop";
 
-	before = g_faults.load();
-	WriteOnThread(store, target - Displacement, 0x5555);
-	WriteOnThread(unpatched, target + 8, 0x5556);
-	if (g_faults.load() != before) return "a write to an open page took a fault";
-	if (Read(target) != 0x5555 || Read(target + 8) != 0x5556) return "writes to an open page did not reach guest memory";
-	if (kyty_selfmark_any(page, page + Page)) return "a write to an open page left a card";
-	if (!fixture.GpuHolds(target, 0x5555) || !fixture.GpuHolds(target + 8, 0x5556)) return "the GPU buffer does not hold the writes to an open page";
-
-	before = g_faults.load();
+	auto again = g_faults.load();
 	WriteOnThread(store, target - Displacement, 0x6666);
-	if (g_faults.load() != before + 1) return "a corrected site did not fault once on a page given back to faults";
+	if (g_faults.load() != again + 1) return "a corrected site did not fault once on a page given back to faults";
 	if (Read(target) != 0x6666) return "the write to a page given back to faults did not reach guest memory";
 	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "a page given back to faults was marked again";
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of a corrected site on a page given back to faults did not report it at once";
-	if (kyty_selfmark_any(page, page + Page)) return "a write to a page given back to faults left a card";
-	if (!fixture.GpuHolds(target, 0x6666)) return "the GPU buffer does not hold the write to a page given back to faults";
+	again = g_faults.load();
+	WriteOnThread(store, target - Displacement, 0x6667);
+	WriteOnThread(shorter, target + 8, 0x6668);
+	if (g_faults.load() != again) return "a write to an open page took a fault";
+	if (kyty_selfmark_any(page, page + Page)) return "a write to an open page left a card";
+	if (!fixture.GpuHolds(target, 0x6667) || !fixture.GpuHolds(target + 8, 0x6668)) return "the GPU buffer does not hold the writes to an open page";
+	return nullptr;
+}
+
+const char* CheckUnpatchableSiteKeepsTheFault(Fixture& fixture, Store store, Store adder, uint64_t block) {
+	const auto page   = block + Page;
+	const auto target = page + Slot;
+	fixture.Clean(block);
+	WriteOnThread(store, target - Displacement, 0x7000);
+	if (kyty_selfmark_armed(page) == 0 || kyty_selfmark_armed(page) == KYTY_SELFMARK_DELTA_REFUSED) return "a corrected site did not arm a clean page";
+	const auto before = g_faults.load();
+	WriteOnThread(adder, target, 0x0123);
+	if (g_faults.load() != before + 1) return "a write site that cannot be served did not fault once";
+	if (*reinterpret_cast<const volatile uint8_t*>(adder) != AddToMemory[0]) return "a write site that cannot be served was modified";
+	if (Read(target) != 0x7123) return "the write of a site that cannot be served did not reach guest memory";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page was not given back to faults after a write that cannot mark it";
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of a site that cannot be served did not report the page at once";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.GpuHolds(target, 0x7123)) return "the GPU buffer does not hold the write of a site that cannot be served";
 	return nullptr;
 }
 
@@ -214,7 +249,7 @@ int Report(const char* failure) {
 	return 1;
 }
 
-int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store store, Store unpatched) {
+int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store store, Store shorter, Store adder) {
 	RenderContext    renderer(graphics);
 	CommandProcessor producer(renderer, 0);
 	producer.Reset();
@@ -233,8 +268,9 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 	const auto first    = BlockAt(address, 0);
 	int        failures = Report(CheckFirstFaultsCorrectTheSite(fixture, store, first));
 	if (failures == 0) failures += Report(CheckCorrectedWritesTakeNoFault(fixture, store, first));
-	if (failures == 0) failures += Report(CheckUnpatchedSiteKeepsTheFault(fixture, store, unpatched, first));
+	if (failures == 0) failures += Report(CheckShortSiteIsServedAtItsFault(fixture, store, shorter, first));
 	if (failures == 0) failures += Report(CheckWritersAndCollector(fixture, store, BlockAt(address, 1)));
+	if (failures == 0) failures += Report(CheckUnpatchableSiteKeepsTheFault(fixture, store, adder, BlockAt(address, 2)));
 
 	sigaction(SIGSEGV, &g_previous, nullptr);
 	renderer.UnmarkWritten(address, GuestBytes, PageManager::MarkLeave::Forget);
@@ -278,12 +314,14 @@ extern "C" int RunKytySelfMarkingWritesTest() {
 	}
 	std::memcpy(code, LongStore.data(), LongStore.size());
 	std::memcpy(code + 0x100, ShortStore.data(), ShortStore.size());
+	std::memcpy(code + 0x200, AddToMemory.data(), AddToMemory.size());
 	if (::mprotect(code, CodeBytes, PROT_READ | PROT_EXEC) != 0) {
 		std::fputs("kyty_shim_self_marking_writes: FAILED: could not protect guest code\n", stderr);
 		return 1;
 	}
 	const auto address  = reinterpret_cast<uint64_t>(guest);
-	const auto failures = CheckSelfMarkingWrites(gpu.graphics, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100));
+	const auto failures = CheckSelfMarkingWrites(gpu.graphics, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100),
+	                                             reinterpret_cast<Store>(code + 0x200));
 	if (sceKernelMunmap(address, Mapped) != 0) {
 		std::fputs("kyty_shim_self_marking_writes: FAILED: could not unmap guest backing\n", stderr);
 		return 1;

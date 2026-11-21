@@ -4,6 +4,7 @@
 #include "common/debugCounters.h"
 #include "common/guardedCopy.h"
 #include "common/runtimeSwitches.h"
+#include "common/timer.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -18,6 +19,7 @@
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
 #endif
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -166,6 +168,9 @@ constexpr std::uint64_t MarkPage     = 4096;
 constexpr std::uint64_t MarkGranule  = 64 * 1024;
 constexpr std::uint64_t MarkReach    = 0x70000000;
 constexpr std::uint64_t MarkStep     = 16 * 1024 * 1024;
+constexpr std::size_t   RedirectPages       = 64;
+constexpr std::uint32_t RedirectLimit       = 24;
+constexpr unsigned      RedirectWindowShift = 22;
 
 bool GuestCodeAddress(std::uint64_t address) {
     if (GuestArena::GuestArenaContains_nid_postfix(reinterpret_cast<const void*>(address), 1)) return true;
@@ -272,6 +277,22 @@ bool MarkedFastPath(std::uint64_t first, std::uint64_t last) {
     return static_cast<std::uint64_t>(delta) >= KYTY_SELFMARK_DELTA_LEAST && (last == first || kyty_selfmark_armed(last) == delta);
 }
 
+bool RedirectsTooOften(std::uint64_t page) {
+    struct Recent {
+        std::uint64_t page   = 0;
+        std::uint32_t window = 0;
+        std::uint32_t count  = 0;
+    };
+    static thread_local std::array<Recent, RedirectPages> recent {};
+    const auto window = static_cast<std::uint32_t>(Common::SteadyNs() >> RedirectWindowShift);
+    auto&      slot   = recent[(page / MarkPage) % RedirectPages];
+    if (slot.page != page || slot.window != window) {
+        slot = {page, window, 1};
+        return false;
+    }
+    return ++slot.count > RedirectLimit;
+}
+
 struct MarkedWrite {
     std::uint64_t entry  = 0;
     std::uint64_t first  = 0;
@@ -294,17 +315,22 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
         GuestDeliveryRelease_nid_no_patch();
 #endif
     }
-    if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE) {
+    const bool redirect = fault.outcome == KYTY_SELFMARK_REDIRECT;
+    if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE && !redirect) {
         if (PageArmed(page)) Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
         return write;
     }
     const auto target = MarkedTarget(context, fault.entry);
     write.entry       = fault.entry;
-    write.resume      = fault.outcome == KYTY_SELFMARK_SLOW_STORE;
     write.first       = target & ~(MarkPage - 1);
     write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
-    const auto arm    = [](std::uint64_t at) { return kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at); };
+    const auto arm    = [](std::uint64_t at) { return PageArmed(at) || (kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at)); };
     write.served      = arm(write.first) && (write.last == write.first || arm(write.last)) && MarkedFastPath(write.first, write.last);
+    if (redirect && write.served && RedirectsTooOften(write.first)) {
+        write.served = false;
+        Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true);
+    }
+    write.resume = fault.outcome == KYTY_SELFMARK_SLOW_STORE || (redirect && write.served);
     return write;
 }
 

@@ -244,7 +244,7 @@ unsafe extern "C" fn on_fault(_signal: i32, info: *const u64, context: *mut u8) 
     }
     let delta = world.alias.wrapping_sub(world.primary) as i64;
     match outcome {
-        sites::OUTCOME_PATCHED | sites::OUTCOME_SLOW_STORE => {
+        sites::OUTCOME_PATCHED | sites::OUTCOME_SLOW_STORE | sites::OUTCOME_REDIRECT => {
             let repeated = REPEAT_RIP.swap(rip, Ordering::SeqCst) == rip && REPEAT_ADDRESS.swap(address, Ordering::SeqCst) == address;
             REPEAT_ADDRESS.store(address, Ordering::SeqCst);
             if ARM_ON_FAULT.load(Ordering::SeqCst) != 0 && !repeated {
@@ -257,7 +257,8 @@ unsafe extern "C" fn on_fault(_signal: i32, info: *const u64, context: *mut u8) 
                 cards::arm(address & !(PAGE - 1), 0);
                 open_page(address);
             }
-            if outcome == sites::OUTCOME_SLOW_STORE {
+            let through = ARM_ON_FAULT.load(Ordering::SeqCst) != 0 && !repeated;
+            if outcome == sites::OUTCOME_SLOW_STORE || (outcome == sites::OUTCOME_REDIRECT && through) {
                 *gregs.add(REG_RIP) = value;
             }
         }
@@ -409,12 +410,70 @@ pub struct Checked {
     pub refusal: Option<Refusal>,
 }
 
+pub fn check_short(world: &World, bytes: &[u8], slot: u64) -> Checked {
+    let store = match decode::decode(bytes) {
+        Ok(store) => store,
+        Err(refusal) => return Checked { refusal: Some(refusal) },
+    };
+    let length = store.len as usize;
+    assert!(length < decode::PATCH_LEN);
+    let page = world.primary + (0x100 + slot * 4) * PAGE;
+    let target = page + 0x200;
+    let plain = stub(world, &bytes[..length]);
+    let site = stub(world, &bytes[..length]);
+    let mut expected = Vec::new();
+    for &flags in FLAG_SETS.iter() {
+        let mut regs = seed(flags);
+        if !aim(&mut regs, &store, target) {
+            return Checked { refusal: None };
+        }
+        fill(world, target);
+        protect(target, true);
+        call(plain, &mut regs);
+        expected.push((regs, window(target)));
+    }
+    cards::arm(page, 0);
+    protect(target, false);
+    LAST_REFUSAL.store(0, Ordering::SeqCst);
+    for (round, &flags) in FLAG_SETS.iter().enumerate() {
+        fill(world, target);
+        REPEAT_RIP.store(0, Ordering::SeqCst);
+        let faults = FAULTS.load(Ordering::SeqCst);
+        let opened = OPENED.load(Ordering::SeqCst);
+        let mut regs = seed(flags);
+        aim(&mut regs, &store, target);
+        call(site, &mut regs);
+        assert_eq!(LAST_REFUSAL.load(Ordering::SeqCst), 0, "{bytes:02x?} short store refused");
+        assert_eq!(FAULTS.load(Ordering::SeqCst), faults + 1, "{bytes:02x?} a short store faults once at each run");
+        assert_eq!(OPENED.load(Ordering::SeqCst), opened, "{bytes:02x?} page stays protected");
+        assert!(regs == expected[round].0, "{bytes:02x?} registers and flags of a redirected short store, flag set {round}");
+        assert_eq!(window(world.alias + (target - world.primary)), expected[round].1, "{bytes:02x?} memory of a redirected short store");
+        assert_eq!(taken(page, page + PAGE), vec![(page, page + PAGE)], "{bytes:02x?} card of a redirected short store");
+        assert_eq!(unsafe { core::slice::from_raw_parts(site as *const u8, length) }, &bytes[..length], "{bytes:02x?} short site left as it was");
+    }
+    cards::arm(page, 0);
+    protect(target, true);
+    fill(world, target);
+    let before = FAULTS.load(Ordering::SeqCst);
+    let mut regs = seed(FLAG_SETS[1]);
+    aim(&mut regs, &store, target);
+    call(site, &mut regs);
+    assert_eq!(FAULTS.load(Ordering::SeqCst), before, "{bytes:02x?} open page takes no fault");
+    assert!(regs == expected[1].0);
+    assert_eq!(window(target), expected[1].1);
+    assert!(taken(page, page + PAGE).is_empty());
+    Checked { refusal: None }
+}
+
 pub fn check(world: &World, bytes: &[u8], slot: u64) -> Checked {
     let store = match decode::decode(bytes) {
         Ok(store) => store,
         Err(refusal) => return Checked { refusal: Some(refusal) },
     };
     let length = store.len as usize;
+    if length < decode::PATCH_LEN {
+        return check_short(world, bytes, slot);
+    }
     let page = world.primary + (0x100 + slot * 4) * PAGE;
     let target = page + 0x200;
     let plain = stub(world, &bytes[..length]);
@@ -565,6 +624,31 @@ fn corrected_writes_match_the_original_instruction() {
 }
 
 #[test]
+fn short_stores_are_redirected_at_their_faults() {
+    let (world, _guard) = world();
+    let forms: &[&[u8]] = &[
+        &[0x48, 0x89, 0x17],
+        &[0x44, 0x89, 0x28],
+        &[0x88, 0x0A],
+        &[0x42, 0x89, 0x14, 0x33],
+        &[0xC5, 0xF9, 0xE7, 0x07],
+        &[0xC5, 0xF9, 0x7F, 0x07],
+        &[0xC5, 0xFC, 0x11, 0x01],
+        &[0x0F, 0x11, 0x07],
+        &[0x0F, 0x29, 0x06],
+        &[0x66, 0x89, 0x07],
+        &[0xC6, 0x07, 0x7F],
+        &[0x89, 0x47, 0x10],
+        &[0x4C, 0x89, 0x3C, 0xC8],
+        &[0x88, 0x27],
+    ];
+    for (slot, form) in forms.iter().enumerate() {
+        let checked = check(world, form, 0x1800 + slot as u64);
+        assert_eq!(checked.refusal, None, "{form:02x?}");
+    }
+}
+
+#[test]
 fn writes_across_two_pages() {
     let (world, _guard) = world();
     let delta = world.alias.wrapping_sub(world.primary) as i64;
@@ -627,8 +711,8 @@ fn writes_across_two_pages() {
 fn unsupported_sites_keep_the_fault() {
     let (world, _guard) = world();
     let cases: &[(&[u8], Refusal)] = &[
-        (&[0x48, 0x89, 0x17], Refusal::Short),
-        (&[0xC5, 0xF9, 0xE7, 0x07], Refusal::Short),
+        (&[0x48, 0x01, 0x37], Refusal::NotStore),
+        (&[0x48, 0xFF, 0x07], Refusal::NotStore),
         (&[0x48, 0x01, 0x87, 0x00, 0x01, 0x00, 0x00], Refusal::NotStore),
         (&[0xF0, 0x48, 0x01, 0x87, 0x00, 0x01, 0x00, 0x00], Refusal::Prefix),
     ];
@@ -638,7 +722,7 @@ fn unsupported_sites_keep_the_fault() {
         let code = stub(world, bytes);
         let mut regs = seed(0);
         regs.gpr[7] = target;
-        if bytes[1] == 0x01 || bytes[2] == 0x01 {
+        if bytes.len() > 3 {
             regs.gpr[7] = target - 0x100;
         }
         fill(world, target);
