@@ -1,0 +1,29 @@
+2026-11-21 13:01:50
+ 13:01:50 up 23:03,  1 user,  load average: 0.14, 0.17, 0.07
+[machine-slot] check pris par architect après 0 s d'attente
+== J dessins seuls, shader lourd, overdraw 8
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 0 passes 180 | KT 16 KB 8 CR 48 NTEX 512 | overdraw 8.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   0.539 (p10   0.469 p90   0.558) =  0.142 us/op | gpu_ms   5.970 (p10   5.953 p90   5.998) | submit_wait_ms   6.023 | drain_ms  0.000 | image 540c6ea04765f738
+cpu-bda     cpu_record_ms   0.493 (p10   0.424 p90   0.504) =  0.130 us/op | gpu_ms   6.068 (p10   6.050 p90   6.094) | submit_wait_ms   6.120 | drain_ms  0.000 | image 540c6ea04765f738
+gpu-inv-pt  cpu_record_ms   0.253 (p10   0.223 p90   0.260) =  0.067 us/op | gpu_ms   5.539 (p10   5.526 p90   5.561) | submit_wait_ms   5.592 | drain_ms  0.000 | image 540c6ea04765f738
+gpu-inv-ct  cpu_record_ms   0.254 (p10   0.224 p90   0.263) =  0.067 us/op | gpu_ms   5.530 (p10   5.524 p90   5.551) | submit_wait_ms   5.584 | drain_ms  0.000 | image 540c6ea04765f738
+== K dessins seuls, shader lourd, overdraw 24
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 0 passes 180 | KT 16 KB 8 CR 48 NTEX 512 | overdraw 24.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   0.547 (p10   0.481 p90   0.560) =  0.144 us/op | gpu_ms  16.860 (p10  16.826 p90  16.911) | submit_wait_ms  16.908 | drain_ms  0.000 | image 2d253c6cc368d49c
+cpu-bda     cpu_record_ms   0.491 (p10   0.434 p90   0.504) =  0.129 us/op | gpu_ms  17.149 (p10  17.090 p90  17.170) | submit_wait_ms  17.192 | drain_ms  0.000 | image 2d253c6cc368d49c
+gpu-inv-pt  cpu_record_ms   0.254 (p10   0.227 p90   0.264) =  0.067 us/op | gpu_ms  15.181 (p10  15.142 p90  15.240) | submit_wait_ms  15.234 | drain_ms  0.000 | image 2d253c6cc368d49c
+gpu-inv-ct  cpu_record_ms   0.254 (p10   0.228 p90   0.261) =  0.067 us/op | gpu_ms  15.224 (p10  15.164 p90  15.251) | submit_wait_ms  15.274 | drain_ms  0.000 | image 2d253c6cc368d49c
+== L dessins seuls, shader défaut, overdraw 24
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 0 passes 180 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 24.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   0.463 (p10   0.393 p90   0.472) =  0.122 us/op | gpu_ms   6.829 (p10   6.812 p90   6.843) | submit_wait_ms   6.883 | drain_ms  0.000 | image 04e5795e51515c62
+cpu-bda     cpu_record_ms   0.416 (p10   0.353 p90   0.435) =  0.109 us/op | gpu_ms   6.739 (p10   6.732 p90   6.745) | submit_wait_ms   6.792 | drain_ms  0.000 | image 04e5795e51515c62
+gpu-inv-pt  cpu_record_ms   0.252 (p10   0.222 p90   0.262) =  0.066 us/op | gpu_ms   6.425 (p10   6.417 p90   6.437) | submit_wait_ms   6.480 | drain_ms  0.000 | image 04e5795e51515c62
+gpu-inv-ct  cpu_record_ms   0.253 (p10   0.222 p90   0.262) =  0.067 us/op | gpu_ms   6.392 (p10   6.383 p90   6.399) | submit_wait_ms   6.445 | drain_ms  0.000 | image 04e5795e51515c62
+== M calculs seuls (2600 dispatchs, 1 passe)
+device NVIDIA GeForce RTX 4080 SUPER | draws 64 dispatches 2600 passes 1 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   1.246 (p10   1.108 p90   1.305) =  0.468 us/op | gpu_ms   2.698 (p10   2.696 p90   2.700) | submit_wait_ms   2.786 | drain_ms  0.000 | image f44f6f9edaf3bf90
+cpu-bda     cpu_record_ms   1.218 (p10   1.100 p90   1.267) =  0.457 us/op | gpu_ms   2.710 (p10   2.708 p90   2.713) | submit_wait_ms   2.791 | drain_ms  0.000 | image f44f6f9edaf3bf90
+gpu-inv-pt  cpu_record_ms   1.131 (p10   1.026 p90   1.251) =  0.424 us/op | gpu_ms   4.114 (p10   4.111 p90   4.117) | submit_wait_ms   4.205 | drain_ms  0.000 | image f44f6f9edaf3bf90
+gpu-inv-ct  cpu_record_ms   1.149 (p10   1.030 p90   1.249) =  0.431 us/op | gpu_ms   3.150 (p10   3.147 p90   3.153) | submit_wait_ms   3.241 | drain_ms  0.000 | image f44f6f9edaf3bf90
+ 13:02:15 up 23:04,  1 user,  load average: 0.09, 0.16, 0.07
+2026-11-21 13:02:15

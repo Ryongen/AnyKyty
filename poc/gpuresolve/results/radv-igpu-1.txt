@@ -1,0 +1,15 @@
+2026-11-21 13:19:55
+device AMD Ryzen 9 7950X3D 16-Core Processor (RADV RAPHAEL_MENDOCINO) | draws 3800 dispatches 2600 passes 180 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 2 x 10 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   0.757 (p10   0.739 p90   0.791) =  0.118 us/op | gpu_ms  62.922 (p10  61.849 p90  66.351) | submit_wait_ms  63.023 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+cpu-bda     cpu_record_ms   0.684 (p10   0.666 p90   0.706) =  0.107 us/op | gpu_ms  62.937 (p10  61.984 p90  66.435) | submit_wait_ms  63.024 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   0.529 (p10   0.512 p90   0.617) =  0.083 us/op | gpu_ms  62.726 (p10  62.146 p90  66.489) | submit_wait_ms  62.822 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   0.505 (p10   0.500 p90   0.512) =  0.079 us/op | gpu_ms  62.164 (p10  61.817 p90  62.481) | submit_wait_ms  62.272 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-pre-pt  cpu_record_ms   0.610 (p10   0.584 p90   0.710) =  0.095 us/op | gpu_ms  68.816 (p10  68.486 p90  69.175) | submit_wait_ms  68.916 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-pre-ct  cpu_record_ms   0.609 (p10   0.577 p90   0.702) =  0.095 us/op | gpu_ms  67.438 (p10  67.131 p90  69.890) | submit_wait_ms  67.552 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+device AMD Ryzen 9 7950X3D 16-Core Processor (RADV RAPHAEL_MENDOCINO) | draws 3800 dispatches 2600 passes 180 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 1 | rounds 2 x 10 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   0.768 (p10   0.748 p90   0.797) =  0.120 us/op | gpu_ms  62.198 (p10  61.875 p90  62.569) | submit_wait_ms  62.301 | drain_ms  1.076 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+cpu-bda     cpu_record_ms   0.691 (p10   0.684 p90   0.696) =  0.108 us/op | gpu_ms  62.002 (p10  61.539 p90  62.328) | submit_wait_ms  62.097 | drain_ms  1.069 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   0.546 (p10   0.515 p90   0.636) =  0.085 us/op | gpu_ms  63.426 (p10  62.983 p90  63.664) | submit_wait_ms  63.551 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   0.509 (p10   0.505 p90   0.618) =  0.079 us/op | gpu_ms  63.092 (p10  62.763 p90  63.263) | submit_wait_ms  63.205 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-pre-pt  cpu_record_ms   0.714 (p10   0.604 p90   0.732) =  0.112 us/op | gpu_ms  69.733 (p10  69.412 p90  70.283) | submit_wait_ms  69.861 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0
+gpu-pre-ct  cpu_record_ms   0.600 (p10   0.581 p90   0.706) =  0.094 us/op | gpu_ms  68.282 (p10  68.017 p90  68.794) | submit_wait_ms  68.389 | drain_ms  0.000 | image 58a6ec69f4fb69ca diff 0 bytes max 0

@@ -1,0 +1,35 @@
+2026-11-21 13:03:18
+ 13:03:18 up 23:05,  1 user,  load average: 0.23, 0.17, 0.08
+[machine-slot] check pris par architect après 0 s d'attente
+== N défaut, blocs CPU recopiés en VRAM pure
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 2600 passes 180 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring host+visible+cached | mirror device-local
+cpu-ubo     cpu_record_ms   1.599 (p10   1.510 p90   1.680) =  0.250 us/op | gpu_ms   4.813 (p10   4.803 p90   4.822) | submit_wait_ms   4.903 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+cpu-bda     cpu_record_ms   1.541 (p10   1.455 p90   1.633) =  0.241 us/op | gpu_ms   4.751 (p10   4.741 p90   4.762) | submit_wait_ms   4.841 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   1.387 (p10   1.289 p90   1.471) =  0.217 us/op | gpu_ms   5.990 (p10   5.985 p90   5.996) | submit_wait_ms   6.081 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   1.370 (p10   1.284 p90   1.464) =  0.214 us/op | gpu_ms   4.974 (p10   4.967 p90   4.982) | submit_wait_ms   5.063 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+== O dessins seuls, lourd, overdraw 24, blocs recopiés
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 0 passes 180 | KT 16 KB 8 CR 48 NTEX 512 | overdraw 24.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring host+visible+cached | mirror device-local
+cpu-ubo     cpu_record_ms   0.544 (p10   0.482 p90   0.563) =  0.143 us/op | gpu_ms  16.914 (p10  16.901 p90  16.983) | submit_wait_ms  16.975 | drain_ms  0.000 | image 2d253c6cc368d49c diff 0 bytes max 0
+cpu-bda     cpu_record_ms   0.493 (p10   0.436 p90   0.508) =  0.130 us/op | gpu_ms  17.169 (p10  17.157 p90  17.177) | submit_wait_ms  17.229 | drain_ms  0.000 | image 2d253c6cc368d49c diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   0.252 (p10   0.224 p90   0.262) =  0.066 us/op | gpu_ms  15.163 (p10  15.132 p90  15.222) | submit_wait_ms  15.218 | drain_ms  0.000 | image 2d253c6cc368d49c diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   0.251 (p10   0.224 p90   0.262) =  0.066 us/op | gpu_ms  15.201 (p10  15.163 p90  15.253) | submit_wait_ms  15.257 | drain_ms  0.000 | image 2d253c6cc368d49c diff 0 bytes max 0
+== P dessins seuls, défaut, overdraw 3, blocs recopiés
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 0 passes 180 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring host+visible+cached | mirror device-local
+cpu-ubo     cpu_record_ms   0.377 (p10   0.368 p90   0.416) =  0.099 us/op | gpu_ms   1.228 (p10   1.224 p90   1.234) | submit_wait_ms   1.273 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+cpu-bda     cpu_record_ms   0.328 (p10   0.319 p90   0.353) =  0.086 us/op | gpu_ms   1.221 (p10   1.219 p90   1.223) | submit_wait_ms   1.266 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   0.213 (p10   0.206 p90   0.220) =  0.056 us/op | gpu_ms   1.110 (p10   1.109 p90   1.111) | submit_wait_ms   1.147 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   0.213 (p10   0.205 p90   0.219) =  0.056 us/op | gpu_ms   1.104 (p10   1.103 p90   1.105) | submit_wait_ms   1.138 | drain_ms  0.000 | image a2b0bbe781cb56a0 diff 0 bytes max 0
+== Q léger, contrôle d'image
+device NVIDIA GeForce RTX 4080 SUPER | draws 3800 dispatches 2600 passes 180 | KT 4 KB 2 CR 8 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring device-local+visible | mirror device-local
+cpu-ubo     cpu_record_ms   1.609 (p10   1.515 p90   1.704) =  0.251 us/op | gpu_ms   3.786 (p10   3.770 p90   3.794) | submit_wait_ms   3.875 | drain_ms  0.000 | image 894960bd1919965b diff 0 bytes max 0
+cpu-bda     cpu_record_ms   1.590 (p10   1.493 p90   1.684) =  0.248 us/op | gpu_ms   3.784 (p10   3.768 p90   3.803) | submit_wait_ms   3.873 | drain_ms  0.000 | image c2fcaa63ac3299fa diff 1 bytes max 1
+gpu-inv-pt  cpu_record_ms   1.362 (p10   1.284 p90   1.474) =  0.213 us/op | gpu_ms   5.137 (p10   5.116 p90   5.148) | submit_wait_ms   5.218 | drain_ms  0.000 | image c2fcaa63ac3299fa diff 1 bytes max 1
+gpu-inv-ct  cpu_record_ms   1.364 (p10   1.288 p90   1.485) =  0.213 us/op | gpu_ms   4.125 (p10   4.108 p90   4.143) | submit_wait_ms   4.214 | drain_ms  0.000 | image c2fcaa63ac3299fa diff 1 bytes max 1
+== R calculs seuls, blocs recopiés
+device NVIDIA GeForce RTX 4080 SUPER | draws 64 dispatches 2600 passes 1 | KT 8 KB 4 CR 24 NTEX 512 | overdraw 3.00 | gpu-tables 0 | rounds 4 x 40 frames | cpu 2 | ring host+visible+cached | mirror device-local
+cpu-ubo     cpu_record_ms   1.191 (p10   1.080 p90   1.225) =  0.447 us/op | gpu_ms   2.737 (p10   2.735 p90   2.740) | submit_wait_ms   2.828 | drain_ms  0.000 | image f44f6f9edaf3bf90 diff 0 bytes max 0
+cpu-bda     cpu_record_ms   1.169 (p10   1.084 p90   1.208) =  0.439 us/op | gpu_ms   2.749 (p10   2.747 p90   2.752) | submit_wait_ms   2.841 | drain_ms  0.000 | image f44f6f9edaf3bf90 diff 0 bytes max 0
+gpu-inv-pt  cpu_record_ms   1.119 (p10   1.028 p90   1.238) =  0.420 us/op | gpu_ms   4.093 (p10   4.089 p90   4.096) | submit_wait_ms   4.183 | drain_ms  0.000 | image f44f6f9edaf3bf90 diff 0 bytes max 0
+gpu-inv-ct  cpu_record_ms   1.125 (p10   1.027 p90   1.218) =  0.422 us/op | gpu_ms   3.132 (p10   3.129 p90   3.136) | submit_wait_ms   3.221 | drain_ms  0.000 | image f44f6f9edaf3bf90 diff 0 bytes max 0
+ 13:03:43 up 23:05,  1 user,  load average: 0.21, 0.17, 0.09
+2026-11-21 13:03:43

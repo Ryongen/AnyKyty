@@ -1,0 +1,16 @@
+layout(local_size_x = 64) in;
+
+void main() {
+    uint d = gl_GlobalInvocationID.x;
+    if (d >= pc.a0) {
+        return;
+    }
+    Words m = Words(xlate(pc.arg));
+    Words o = Words(xlate(pc.outp) + uint64_t(d) * uint64_t(KT * 32));
+    for (uint i = 0u; i < uint(KT); i++) {
+        uint s = sel(d, i, pc.a1);
+        for (uint k = 0u; k < 8u; k++) {
+            o.w[i * 8u + k] = m.w[s * 8u + k];
+        }
+    }
+}

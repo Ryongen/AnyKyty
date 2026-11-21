@@ -1,0 +1,27 @@
+layout(local_size_x = 64) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec4 acc = vec4(0.0);
+#if MODE == 1
+    RBlock rb = RBlock(pc.arg);
+    for (uint j = 0u; j < uint(KB); j++) {
+        uvec4 b = rb.buf[j >> 1];
+        uint64_t d = ((j & 1u) == 0u) ? packUint2x32(b.xy) : packUint2x32(b.zw);
+        Words w = Words(d);
+        acc += vec4(uintBitsToFloat(w.w[i & 3u]), uintBitsToFloat(w.w[1]), uintBitsToFloat(w.w[2]), uintBitsToFloat(w.w[3]));
+    }
+    acc.a += rb.c[4u + ((i & 15u) >> 2)][i & 3u];
+#else
+    uint64_t srt = xlate(pc.arg);
+    uint64_t bt = xlate(ld64(srt, 2u));
+    Words cw = Words(xlate(ld64(srt, 4u)));
+    for (uint j = 0u; j < uint(KB); j++) {
+        Words w = Words(xlate(ld64(bt, j * 4u)));
+        acc += vec4(uintBitsToFloat(w.w[i & 3u]), uintBitsToFloat(w.w[1]), uintBitsToFloat(w.w[2]), uintBitsToFloat(w.w[3]));
+    }
+    acc.a += uintBitsToFloat(cw.w[16u + (i & 15u)]);
+#endif
+    Words o = Words(pc.outp + uint64_t(pc.a0) * 256ul);
+    o.w[i] = floatBitsToUint(acc.x + acc.y + acc.z + acc.a);
+}
