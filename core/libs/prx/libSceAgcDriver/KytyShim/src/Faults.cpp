@@ -263,9 +263,13 @@ std::uint64_t MarkedTarget(const FaultContext& context, std::uint64_t entry) {
     return kyty_selfmark_target(entry, registers);
 }
 
+bool PageArmed(std::uint64_t page) {
+    return static_cast<std::uint64_t>(kyty_selfmark_armed(page)) >= KYTY_SELFMARK_DELTA_LEAST;
+}
+
 bool MarkedFastPath(std::uint64_t first, std::uint64_t last) {
     const auto delta = kyty_selfmark_armed(first);
-    return delta != 0 && (last == first || kyty_selfmark_armed(last) == delta);
+    return static_cast<std::uint64_t>(delta) >= KYTY_SELFMARK_DELTA_LEAST && (last == first || kyty_selfmark_armed(last) == delta);
 }
 
 struct MarkedWrite {
@@ -279,17 +283,19 @@ struct MarkedWrite {
 MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::uint64_t rip) {
     namespace Memory = Libs::LibKernel::Memory;
     MarkedWrite write;
-    const auto  page = address & ~(MarkPage - 1);
-    if (!Memory::GuestRangeWatched(page, MarkPage) && kyty_selfmark_armed(page) == 0) return write;
+    const auto  page  = address & ~(MarkPage - 1);
+    auto        fault = kyty_selfmark_lookup(rip);
+    if (fault.outcome == KYTY_SELFMARK_NONE && kyty_selfmark_enabled() && (PageArmed(page) || Memory::GuestRangeWatched(page, MarkPage))) {
 #ifndef _WIN32
-    GuestDeliveryHold_nid_no_patch();
+        GuestDeliveryHold_nid_no_patch();
 #endif
-    const auto fault = kyty_selfmark_write_fault(rip);
+        fault = kyty_selfmark_write_fault(rip);
 #ifndef _WIN32
-    GuestDeliveryRelease_nid_no_patch();
+        GuestDeliveryRelease_nid_no_patch();
 #endif
+    }
     if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE) {
-        Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
+        if (PageArmed(page)) Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
         return write;
     }
     const auto target = MarkedTarget(context, fault.entry);
@@ -297,14 +303,14 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
     write.resume      = fault.outcome == KYTY_SELFMARK_SLOW_STORE;
     write.first       = target & ~(MarkPage - 1);
     write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
-    const bool armed  = Memory::MarkWrittenPage(write.first) && (write.last == write.first || Memory::MarkWrittenPage(write.last));
-    write.served      = armed && MarkedFastPath(write.first, write.last);
+    const auto arm    = [](std::uint64_t at) { return kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at); };
+    write.served      = arm(write.first) && (write.last == write.first || arm(write.last)) && MarkedFastPath(write.first, write.last);
     return write;
 }
 
 void FinishMarkedWrite(FaultContext& context, const MarkedWrite& write) {
     if (write.entry == 0) return;
-    if (!write.served && !MarkedFastPath(write.first, write.last)) {
+    if (!write.served && !MarkedFastPath(write.first, write.last) && (PageArmed(write.first) || PageArmed(write.last))) {
         Libs::LibKernel::Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true);
     }
     if (write.resume) SetInstruction(context, write.entry);

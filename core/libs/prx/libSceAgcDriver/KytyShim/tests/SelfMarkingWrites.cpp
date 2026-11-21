@@ -115,6 +115,7 @@ const char* CheckFirstFaultsCorrectTheSite(Fixture& fixture, Store store, uint64
 	fixture.renderer.CollectHotPageWrites();
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the synchronisation point did not report the written page";
 	if (fixture.buffers.IsRegionCpuDirty(page + Page, Page)) return "the synchronisation point reported a page nobody wrote";
+	if (kyty_selfmark_armed(page + Page) == 0) return "the first fault did not arm the other clean pages of the block";
 	if (kyty_selfmark_any(page, page + Page)) return "the card survived its collection";
 	if (!fixture.GpuHolds(target, 0x2222)) return "the GPU buffer does not hold the corrected write";
 	if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the upload did not leave the self-marked page clean";
@@ -147,7 +148,8 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	if (g_faults.load() != before + 1) return "a write site that cannot be corrected did not fault once";
 	if (*reinterpret_cast<const volatile uint8_t*>(unpatched) != ShortStore[0]) return "a short write site was modified";
 	if (Read(target + 8) != 0x4444) return "the write of an uncorrected site did not reach guest memory";
-	if (kyty_selfmark_armed(page) != 0) return "the page stayed armed after a write that cannot mark it";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page was not given back to faults after a write that cannot mark it";
+	if (kyty_selfmark_armed(page + 2 * Page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block of a page given back to faults was left marked";
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of an uncorrected site did not report the page at once";
 
 	before = g_faults.load();
@@ -161,11 +163,11 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	before = g_faults.load();
 	WriteOnThread(store, target - Displacement, 0x6666);
 	if (g_faults.load() != before + 1) return "a corrected site did not fault once on a page given back to faults";
-	if (Read(target) != 0x6666) return "the write after the page was armed again did not reach guest memory";
-	if (kyty_selfmark_armed(page) == 0) return "the page was not armed again by a corrected site";
-	if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the write that armed the page again was reported before the synchronisation point";
-	fixture.renderer.CollectHotPageWrites();
-	if (!fixture.GpuHolds(target, 0x6666)) return "the GPU buffer does not hold the write that armed the page again";
+	if (Read(target) != 0x6666) return "the write to a page given back to faults did not reach guest memory";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "a page given back to faults was marked again";
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of a corrected site on a page given back to faults did not report it at once";
+	if (kyty_selfmark_any(page, page + Page)) return "a write to a page given back to faults left a card";
+	if (!fixture.GpuHolds(target, 0x6666)) return "the GPU buffer does not hold the write to a page given back to faults";
 	return nullptr;
 }
 
@@ -235,7 +237,7 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 	if (failures == 0) failures += Report(CheckWritersAndCollector(fixture, store, BlockAt(address, 1)));
 
 	sigaction(SIGSEGV, &g_previous, nullptr);
-	renderer.UnmarkWritten(address, GuestBytes, false);
+	renderer.UnmarkWritten(address, GuestBytes, PageManager::MarkLeave::Forget);
 	renderer.CollectHotPageWrites();
 	const auto last = scheduler.CurrentTick();
 	scheduler.Wait(last);

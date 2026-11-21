@@ -4,6 +4,7 @@ pub const SLOT: usize = 384;
 pub const SITE_AT: usize = 368;
 pub const SLOW_AT: usize = 376;
 const CODE_ROOM: usize = SITE_AT;
+pub const LEAST_DELTA: u32 = 0x1000;
 
 const CANDIDATES: [u8; 11] = [6, 7, 3, 2, 1, 8, 9, 10, 11, 14, 15];
 
@@ -166,6 +167,13 @@ fn page_of(code: &mut Code, pointer: u8, page: u8, limit: u32, holes: &mut Holes
     holes.add(code.hole());
 }
 
+fn armed(code: &mut Code, table: u8, holes: &mut Holes) {
+    code.all(&[rex(true, 0, false, table), 0x81, direct(7, table)]);
+    code.imm32(LEAST_DELTA);
+    code.all(&[0x0F, 0x82]);
+    holes.add(code.hole());
+}
+
 fn finish(code: &mut Code, store: &Store, original: &[u8], pointer: u8, page: u8, table: u8, cards: u64, second: bool) -> usize {
     code.all(&[rex(true, table, false, pointer), 0x01, direct(table, pointer)]);
     code.all(&[rex(true, 0, false, table), 0xB8 + (table & 7)]);
@@ -231,9 +239,7 @@ pub fn build(store: &Store, original: &[u8], site: u64, at: u64, tables: &Tables
     code.all(&[rex(true, 0, false, table), 0xB8 + (table & 7)]);
     code.imm64(tables.delta);
     code.all(&[0x48 | if table >= 8 { 5 } else { 0 } | if page >= 8 { 2 } else { 0 }, 0x8B, ((table & 7) << 3) | 4, 0xC0 | ((page & 7) << 3) | (table & 7)]);
-    code.all(&[rex(true, table, false, table), 0x85, direct(table, table)]);
-    code.all(&[0x0F, 0x84]);
-    slow_holes.add(code.hole());
+    armed(&mut code, table, &mut slow_holes);
     back_holes.add(finish(&mut code, store, original, pointer, page, table, tables.cards, false));
 
     if let Some(hole) = cross_hole {
@@ -250,9 +256,7 @@ pub fn build(store: &Store, original: &[u8], site: u64, at: u64, tables: &Tables
         pop(&mut code, 0);
         code.all(&[0x0F, 0x85]);
         slow_holes.add(code.hole());
-        code.all(&[rex(true, table, false, table), 0x85, direct(table, table)]);
-        code.all(&[0x0F, 0x84]);
-        slow_holes.add(code.hole());
+        armed(&mut code, table, &mut slow_holes);
         back_holes.add(finish(&mut code, store, original, pointer, page, table, tables.cards, true));
     }
 

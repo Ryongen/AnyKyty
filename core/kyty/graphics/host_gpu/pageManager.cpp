@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdarg>
 #include <cstdio>
 #include <cinttypes>
@@ -63,9 +64,14 @@ constexpr size_t   HOT_IDLE_PER_SWEEP = 1024;
 constexpr uint64_t HOT_GRANULE_SIZE   = 2 * 1024 * 1024;
 constexpr uint64_t HOT_CLUSTER_GAP    = 1024 * 1024;
 constexpr uint8_t  HOT_MARKED         = 4;
-constexpr uint8_t  MARK_REFUSALS      = 3;
 constexpr uint32_t MARKED_REGION_CAP  = 1u << 16u;
 constexpr size_t   MARKED_RUNS        = 256;
+constexpr size_t   MARK_BLOCK_PAGES   = 16;
+constexpr size_t   MARK_LINE_PAGES    = 64;
+constexpr size_t   MARK_LINES         = REGION_PAGES / MARK_LINE_PAGES;
+constexpr uint64_t MARK_SWEEP_NS      = 20'000'000;
+constexpr int64_t  MARK_REFUSED       = 1;
+static_assert(MARK_LINES == 16);
 
 [[noreturn]] void Fatal(const char* format, ...) {
 	char    text[1024];
@@ -167,6 +173,8 @@ struct PageManager::Impl {
 		std::array<PageState, REGION_PAGES> pages KYTY_GUARDED_BY(lock);
 		std::array<std::atomic<uint8_t>, REGION_PAGES> read_hint {};
 		std::atomic<bool>                   marked {false};
+		uint32_t                            marked_slot = 0;
+		std::array<uint8_t, MARK_LINES>     marked_lines KYTY_GUARDED_BY(lock) {};
 	};
 
 	Impl() {
@@ -404,22 +412,79 @@ struct PageManager::Impl {
 			return;
 		}
 		marked_regions[count].store(static_cast<uint32_t>(address / REGION_SIZE), std::memory_order_relaxed);
+		marked_masks[count].store(0, std::memory_order_relaxed);
+		marked_sweeps[count].store(0, std::memory_order_relaxed);
+		region.marked_slot = count;
 		region.marked.store(true, std::memory_order_release);
 		marked_region_count.store(count + 1, std::memory_order_release);
 	}
 
-	void Unmark(Region& region, PageState& state, uint64_t address, bool refuse) KYTY_REQUIRES(region.lock) {
+	[[nodiscard]] static bool Markable(const PageState& state) noexcept {
+		return state.access_watchers == 0 && state.hot == HOT_COLD && state.write_watchers != 0 && state.mark_refusals == 0;
+	}
+
+	bool Promote(Region& region, PageState& state, size_t page_index, uint64_t address) KYTY_REQUIRES(region.lock) {
+		const auto delta = BackingDelta(address);
+		if (delta == 0 || !ArmPage(address, delta)) {
+			return false;
+		}
+		state.hot       = HOT_MARKED;
+		const auto line = page_index / MARK_LINE_PAGES;
+		if (region.marked_lines[line]++ == 0) {
+			marked_masks[region.marked_slot].fetch_or(static_cast<uint16_t>(1u << line), std::memory_order_release);
+		}
+		marked_pages.fetch_add(1, std::memory_order_relaxed);
+		mark_promoted.fetch_add(1, std::memory_order_relaxed);
+		return true;
+	}
+
+	bool Demote(Region& region, PageState& state, size_t page_index) KYTY_REQUIRES(region.lock) {
 		const auto old_perms = state.Perms();
 		state.hot            = HOT_COLD;
-		if (refuse && state.mark_refusals < MARK_REFUSALS) {
-			state.mark_refusals++;
+		const auto line      = page_index / MARK_LINE_PAGES;
+		if (--region.marked_lines[line] == 0) {
+			marked_masks[region.marked_slot].fetch_and(static_cast<uint16_t>(~(1u << line)), std::memory_order_release);
 		}
-		(void)ArmPage(address, 0);
+		marked_sweeps[region.marked_slot].store(1, std::memory_order_release);
 		marked_pages.fetch_sub(1, std::memory_order_relaxed);
-		(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
-		if (const auto perms = state.Perms(); perms != old_perms) {
-			Protect(address, PAGE_SIZE, perms);
+		return state.Perms() != old_perms;
+	}
+
+	void LeaveMarked(Region& region, uint64_t region_base, size_t first, size_t last, bool refuse, bool forget)
+	    KYTY_REQUIRES(region.lock) {
+		size_t run_begin = 0;
+		size_t run_pages = 0;
+		auto   run_perms = Common::VirtualMemory::Mode::ReadWrite;
+		const auto flush = [&] {
+			if (run_pages != 0) {
+				Protect(region_base + run_begin * PAGE_SIZE, run_pages * PAGE_SIZE, run_perms);
+				run_pages = 0;
+			}
+		};
+		for (size_t page = first; page < last; page++) {
+			auto&      state   = region.pages[page];
+			const auto address = region_base + page * PAGE_SIZE;
+			bool       changed = false;
+			if (state.hot == HOT_MARKED) {
+				changed = Demote(region, state, page);
+				(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
+			}
+			if (refuse) {
+				state.mark_refusals = 1;
+			} else if (forget) {
+				state.mark_refusals = 0;
+			}
+			(void)ArmPage(address, state.mark_refusals != 0 ? MARK_REFUSED : 0);
+			if (changed && run_pages != 0 && run_begin + run_pages == page && state.Perms() == run_perms) {
+				run_pages++;
+			} else if (changed) {
+				flush();
+				run_begin = page;
+				run_pages = 1;
+				run_perms = state.Perms();
+			}
 		}
+		flush();
 	}
 
 	template <typename Func>
@@ -583,6 +648,9 @@ struct PageManager::Impl {
 
 	TrackingSpinLock                         marked_lock {SpinLockClass::Pages};
 	std::unique_ptr<std::atomic<uint32_t>[]> marked_regions = std::make_unique<std::atomic<uint32_t>[]>(MARKED_REGION_CAP);
+	std::unique_ptr<std::atomic<uint16_t>[]> marked_masks   = std::make_unique<std::atomic<uint16_t>[]>(MARKED_REGION_CAP);
+	std::unique_ptr<std::atomic<uint8_t>[]>  marked_sweeps  = std::make_unique<std::atomic<uint8_t>[]>(MARKED_REGION_CAP);
+	std::atomic<uint64_t>                    mark_last_sweep {0};
 	std::atomic<uint32_t>                    marked_region_count {0};
 	std::atomic<uint64_t>                    marked_pages {0};
 	std::atomic<bool>                        mark_on {true};
@@ -900,46 +968,69 @@ bool PageManager::MarkWritten(uint64_t vaddr) {
 	if (state == nullptr) {
 		return false;
 	}
-	SpinGuard lock(region->lock);
+	const auto region_base = Common::AlignDown(page, REGION_SIZE);
+	const auto index       = static_cast<size_t>((page - region_base) / PAGE_SIZE);
+	SpinGuard  lock(region->lock);
 	if (state->access_watchers != 0) {
 		return false;
 	}
-	const auto delta = BackingDelta(page);
 	if (state->hot == HOT_MARKED) {
+		const auto delta = BackingDelta(page);
 		if (delta != 0 && ArmPage(page, delta)) {
 			return true;
 		}
-		impl.Unmark(*region, *state, page, true);
+		impl.LeaveMarked(*region, region_base, index, index + 1, true, false);
 		return false;
 	}
-	if (state->hot != HOT_COLD || state->write_watchers == 0 || state->mark_refusals >= MARK_REFUSALS || delta == 0) {
+	if (!Impl::Markable(*state)) {
 		return false;
 	}
 	impl.ListMarkedRegion(*region, page);
-	if (!region->marked.load(std::memory_order_acquire) || !ArmPage(page, delta)) {
+	if (!region->marked.load(std::memory_order_acquire) || !impl.Promote(*region, *state, index, page)) {
 		return false;
 	}
-	state->hot = HOT_MARKED;
-	impl.marked_pages.fetch_add(1, std::memory_order_relaxed);
-	impl.mark_promoted.fetch_add(1, std::memory_order_relaxed);
+	const auto first = index / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
+	for (size_t other = first; other < first + MARK_BLOCK_PAGES; other++) {
+		if (other != index && Impl::Markable(region->pages[other])) {
+			(void)impl.Promote(*region, region->pages[other], other, region_base + other * PAGE_SIZE);
+		}
+	}
 	return true;
 }
 
-void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, bool refuse) {
+void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave) {
 	auto& impl = *m_impl;
-	if (impl.marked_pages.load(std::memory_order_relaxed) == 0 || size == 0 || !GuestRange {vaddr, size}.Valid()) {
+	if (size == 0 || !GuestRange {vaddr, size}.Valid() || impl.marked_region_count.load(std::memory_order_acquire) == 0) {
 		return;
 	}
-	const auto end = Common::AlignUp(vaddr + size, PAGE_SIZE);
+	const bool refuse = leave == MarkLeave::Refuse;
+	const auto end    = Common::AlignUp(vaddr + size, PAGE_SIZE);
 	for (auto at = Common::AlignDown(vaddr, PAGE_SIZE); at < end;) {
-		const auto until  = std::min(end, Common::AlignUp(at + 1, REGION_SIZE));
-		auto*      region = impl.FindRegion(at);
+		const auto until       = std::min(end, Common::AlignUp(at + 1, REGION_SIZE));
+		const auto region_base = Common::AlignDown(at, REGION_SIZE);
+		auto*      region      = impl.FindRegion(at);
 		if (region != nullptr && region->marked.load(std::memory_order_acquire)) {
-			SpinGuard lock(region->lock);
-			for (auto page = at; page < until; page += PAGE_SIZE) {
-				auto& state = region->pages[(page % REGION_SIZE) / PAGE_SIZE];
-				if (state.hot == HOT_MARKED) {
-					impl.Unmark(*region, state, page, refuse);
+			auto       first = static_cast<size_t>((at - region_base) / PAGE_SIZE);
+			auto       last  = static_cast<size_t>((until - region_base) / PAGE_SIZE);
+			const auto mask  = impl.marked_masks[region->marked_slot].load(std::memory_order_acquire);
+			uint32_t   lines = 0;
+			for (auto line = first / MARK_LINE_PAGES; line <= (last - 1) / MARK_LINE_PAGES; line++) {
+				lines |= 1u << line;
+			}
+			if (leave == MarkLeave::Forget || (mask & lines) != 0) {
+				SpinGuard lock(region->lock);
+				if (refuse) {
+					bool any = false;
+					for (auto page = first; page < last && !any; page++) {
+						any = region->pages[page].hot == HOT_MARKED;
+					}
+					if (any) {
+						first = first / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
+						last  = (last + MARK_BLOCK_PAGES - 1) / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
+						impl.LeaveMarked(*region, region_base, first, last, true, false);
+					}
+				} else {
+					impl.LeaveMarked(*region, region_base, first, last, false, leave == MarkLeave::Forget);
 				}
 			}
 		}
@@ -952,7 +1043,7 @@ void PageManager::UnmarkAllWritten() {
 	const auto count = impl.marked_region_count.load(std::memory_order_acquire);
 	for (uint32_t index = 0; index < count; index++) {
 		const auto base = uint64_t {impl.marked_regions[index].load(std::memory_order_relaxed)} * REGION_SIZE;
-		UnmarkWritten(base, REGION_SIZE, false);
+		UnmarkWritten(base, REGION_SIZE, MarkLeave::Release);
 	}
 }
 
@@ -963,6 +1054,7 @@ bool PageManager::HasMarkedPages() const noexcept {
 void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uint64_t vaddr, uint64_t size) {
 	auto&      impl   = *m_impl;
 	const bool scoped = size != 0;
+	uint64_t   now    = 0;
 	if (!scoped) {
 		const bool on = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites);
 		if (impl.mark_on.exchange(on, std::memory_order_acq_rel) != on) {
@@ -976,7 +1068,8 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 #if defined(KYTY_SELF_MARKING)
 		kyty_selfmark_service();
 #endif
-		impl.LogMarkSummary(Common::SteadyNs());
+		now = Common::SteadyNs();
+		impl.LogMarkSummary(now);
 	}
 	const auto count = impl.marked_region_count.load(std::memory_order_acquire);
 	if (count == 0 || (scoped && vaddr > UINT64_MAX - size)) {
@@ -991,13 +1084,28 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 		impl.TakeMarked(vaddr, vaddr + size, deliver);
 		impl.mark_scoped_scans.fetch_add(1, std::memory_order_relaxed);
 	} else {
-		const auto started = Common::SteadyNs();
-		for (uint32_t index = 0; index < count; index++) {
-			const auto base = uint64_t {impl.marked_regions[index].load(std::memory_order_relaxed)} * REGION_SIZE;
-			impl.TakeMarked(base, base + REGION_SIZE, deliver);
+		auto       last_sweep = impl.mark_last_sweep.load(std::memory_order_relaxed);
+		const bool sweep      = now - last_sweep >= MARK_SWEEP_NS &&
+		                        impl.mark_last_sweep.compare_exchange_strong(last_sweep, now, std::memory_order_relaxed);
+		for (uint32_t slot = 0; slot < count; slot++) {
+			const auto base = uint64_t {impl.marked_regions[slot].load(std::memory_order_relaxed)} * REGION_SIZE;
+			if (sweep || (impl.marked_sweeps[slot].load(std::memory_order_relaxed) != 0 &&
+			              impl.marked_sweeps[slot].exchange(0, std::memory_order_acq_rel) != 0)) {
+				impl.TakeMarked(base, base + REGION_SIZE, deliver);
+				continue;
+			}
+			for (uint32_t mask = impl.marked_masks[slot].load(std::memory_order_acquire); mask != 0;) {
+				const auto first = static_cast<uint32_t>(std::countr_zero(mask));
+				const auto run   = static_cast<uint32_t>(std::countr_one(mask >> first));
+				const auto begin = base + uint64_t {first} * MARK_LINE_PAGES * PAGE_SIZE;
+				impl.TakeMarked(begin, begin + uint64_t {run} * MARK_LINE_PAGES * PAGE_SIZE, deliver);
+				mask &= ~(((1u << run) - 1u) << first);
+			}
 		}
-		impl.mark_scans.fetch_add(1, std::memory_order_relaxed);
-		impl.mark_scan_ns.fetch_add(Common::SteadyNs() - started, std::memory_order_relaxed);
+		const auto scans = impl.mark_scans.fetch_add(1, std::memory_order_relaxed);
+		if ((scans & 63u) == 0) {
+			impl.mark_scan_ns.fetch_add((Common::SteadyNs() - now) * 64, std::memory_order_relaxed);
+		}
 	}
 	if (pages != 0) {
 		impl.mark_collected.fetch_add(pages, std::memory_order_relaxed);

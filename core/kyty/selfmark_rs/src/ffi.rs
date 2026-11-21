@@ -39,14 +39,24 @@ pub extern "C" fn kyty_selfmark_enabled() -> bool {
     sites::enabled()
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn kyty_selfmark_write_fault(address: u64) -> KytySelfMarkFault {
-    let (outcome, value) = sites::write_fault(address);
+fn fault(outcome: u32, value: u64) -> KytySelfMarkFault {
     match outcome {
         sites::OUTCOME_REFUSED => KytySelfMarkFault { outcome, reason: value as u32, entry: 0, width: 0 },
         sites::OUTCOME_PATCHED | sites::OUTCOME_SLOW_STORE | sites::OUTCOME_INSIDE => KytySelfMarkFault { outcome, reason: 0, entry: value, width: sites::width_of(value) },
         _ => KytySelfMarkFault { outcome, reason: 0, entry: value, width: 0 },
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kyty_selfmark_write_fault(address: u64) -> KytySelfMarkFault {
+    let (outcome, value) = sites::write_fault(address);
+    fault(outcome, value)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kyty_selfmark_lookup(address: u64) -> KytySelfMarkFault {
+    let (outcome, value) = sites::lookup(address);
+    fault(outcome, value)
 }
 
 #[no_mangle]

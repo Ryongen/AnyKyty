@@ -19,6 +19,11 @@ enum {
 };
 
 enum {
+	KYTY_SELFMARK_DELTA_REFUSED = 1,
+	KYTY_SELFMARK_DELTA_LEAST   = 0x1000
+};
+
+enum {
 	KYTY_SELFMARK_REFUSAL_SHORT           = 1,
 	KYTY_SELFMARK_REFUSAL_NOT_STORE       = 2,
 	KYTY_SELFMARK_REFUSAL_RIP_RELATIVE    = 3,
@@ -59,6 +64,7 @@ bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAlloc
 void              kyty_selfmark_set_enabled(bool on);
 bool              kyty_selfmark_enabled(void);
 KytySelfMarkFault kyty_selfmark_write_fault(uint64_t address);
+KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);
 uint64_t          kyty_selfmark_target(uint64_t entry, const uint64_t* registers);
 uint64_t          kyty_selfmark_site(uint64_t entry);
 void              kyty_selfmark_service(void);

@@ -248,7 +248,7 @@ unsafe fn patch(site: u64) -> (u32, u64) {
     (OUTCOME_PATCHED, entry)
 }
 
-pub unsafe fn write_fault(address: u64) -> (u32, u64) {
+pub unsafe fn lookup(address: u64) -> (u32, u64) {
     if let Some((entry, slow)) = trampoline_of(address) {
         if slow {
             SLOW_FAULTS.fetch_add(1, Ordering::Relaxed);
@@ -268,8 +268,13 @@ pub unsafe fn write_fault(address: u64) -> (u32, u64) {
             return (OUTCOME_BUSY, 0);
         }
     }
-    if !enabled() {
-        return (OUTCOME_NONE, 0);
+    (OUTCOME_NONE, 0)
+}
+
+pub unsafe fn write_fault(address: u64) -> (u32, u64) {
+    let found = lookup(address);
+    if found.0 != OUTCOME_NONE || !enabled() {
+        return found;
     }
     if LOCK.swap(true, Ordering::Acquire) {
         BUSY.fetch_add(1, Ordering::Relaxed);

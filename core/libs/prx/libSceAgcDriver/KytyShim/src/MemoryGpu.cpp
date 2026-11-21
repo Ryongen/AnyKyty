@@ -314,7 +314,7 @@ bool MarkWrittenPage(uint64_t vaddr) noexcept {
 
 void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse) noexcept {
 	if (g_gpu_resources != nullptr && size != 0 && IsGpuAddressRange(vaddr, size)) {
-		g_gpu_resources->UnmarkWritten(vaddr, size, refuse);
+		g_gpu_resources->UnmarkWritten(vaddr, size, refuse ? Graphics::PageManager::MarkLeave::Refuse : Graphics::PageManager::MarkLeave::Release);
 	}
 }
 

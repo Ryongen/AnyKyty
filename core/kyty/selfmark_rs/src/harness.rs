@@ -661,6 +661,35 @@ fn unsupported_sites_keep_the_fault() {
 }
 
 #[test]
+fn refused_pages_take_the_slow_path() {
+    let (world, _guard) = world();
+    let bytes = [0x48, 0x89, 0x87, 0x00, 0x01, 0x00, 0x00];
+    let store = decode::decode(&bytes).unwrap();
+    let page = world.primary + 0x7000 * PAGE;
+    let target = page + 0x40;
+    let patched = stub(world, &bytes);
+    protect(page, false);
+    let mut regs = seed(0);
+    aim(&mut regs, &store, target);
+    call(patched, &mut regs);
+    assert_eq!(unsafe { *(patched as *const u8) }, 0xE9);
+    assert_eq!(taken(page, page + PAGE), vec![(page, page + PAGE)]);
+    assert!(cards::arm(page, cards::REFUSED));
+    protect(page, true);
+    fill(world, target);
+    let before = FAULTS.load(Ordering::SeqCst);
+    let mut regs = seed(0x8D5);
+    aim(&mut regs, &store, target);
+    regs.gpr[0] = 0x5A5A_1234;
+    call(patched, &mut regs);
+    assert_eq!(FAULTS.load(Ordering::SeqCst), before);
+    assert_eq!(unsafe { core::ptr::read_volatile(target as *const u64) }, 0x5A5A_1234);
+    assert!(taken(page, page + PAGE).is_empty());
+    assert_eq!(cards::armed(page), cards::REFUSED);
+    cards::arm(page, 0);
+}
+
+#[test]
 fn card_runs() {
     let (world, _guard) = world();
     let base = world.primary + 0x2000 * PAGE;
