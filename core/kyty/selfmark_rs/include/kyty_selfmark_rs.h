@@ -61,7 +61,6 @@ typedef uint64_t (*KytySelfMarkNearAllocator)(uint64_t site, uint64_t bytes);
 typedef bool (*KytySelfMarkGuestCode)(uint64_t address);
 
 bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAllocator allocator, KytySelfMarkGuestCode guest);
-void              kyty_selfmark_set_enabled(bool on);
 bool              kyty_selfmark_enabled(void);
 KytySelfMarkFault kyty_selfmark_write_fault(uint64_t address);
 KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);

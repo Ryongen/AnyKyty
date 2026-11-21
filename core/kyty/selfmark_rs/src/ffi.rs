@@ -26,12 +26,8 @@ pub extern "C" fn kyty_selfmark_init(guest_limit: u64, allocator: Option<NearAll
         return false;
     }
     sites::configure(allocator, guest);
+    sites::set_enabled(true);
     true
-}
-
-#[no_mangle]
-pub extern "C" fn kyty_selfmark_set_enabled(on: bool) {
-    sites::set_enabled(on && cards::pages() != 0);
 }
 
 #[no_mangle]

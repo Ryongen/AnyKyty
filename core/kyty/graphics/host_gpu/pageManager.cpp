@@ -2,7 +2,6 @@
 
 #include "common/alignment.h"
 #include "common/logging/log.h"
-#include "common/runtimeSwitches.h"
 #include "common/timer.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/hotWriteWatch.h"
@@ -653,7 +652,6 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    mark_last_sweep {0};
 	std::atomic<uint32_t>                    marked_region_count {0};
 	std::atomic<uint64_t>                    marked_pages {0};
-	std::atomic<bool>                        mark_on {true};
 	std::atomic<uint64_t>                    mark_promoted {0};
 	std::atomic<uint64_t>                    mark_refused {0};
 	std::atomic<uint64_t>                    mark_forgotten {0};
@@ -697,7 +695,6 @@ static_assert(std::atomic<void*>::is_always_lock_free);
 
 PageManager::PageManager(): m_impl(std::make_unique<Impl>()) {
 	(void)HotPagesEnabled();
-	m_impl->mark_on.store(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites), std::memory_order_release);
 }
 
 PageManager::~PageManager() = default;
@@ -959,7 +956,7 @@ void PageManager::CollectHotPageWrites(HotPageWritten written, void* context, ui
 
 bool PageManager::MarkWritten(uint64_t vaddr) {
 	auto& impl = *m_impl;
-	if (!GuestRange {vaddr, 1}.Valid() || !impl.mark_on.load(std::memory_order_acquire)) {
+	if (!GuestRange {vaddr, 1}.Valid()) {
 		return false;
 	}
 	const auto    page   = Common::AlignDown(vaddr, PAGE_SIZE);
@@ -1038,15 +1035,6 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave) 
 	}
 }
 
-void PageManager::UnmarkAllWritten() {
-	auto&      impl  = *m_impl;
-	const auto count = impl.marked_region_count.load(std::memory_order_acquire);
-	for (uint32_t index = 0; index < count; index++) {
-		const auto base = uint64_t {impl.marked_regions[index].load(std::memory_order_relaxed)} * REGION_SIZE;
-		UnmarkWritten(base, REGION_SIZE, MarkLeave::Release);
-	}
-}
-
 bool PageManager::HasMarkedPages() const noexcept {
 	return m_impl->marked_region_count.load(std::memory_order_acquire) != 0;
 }
@@ -1056,15 +1044,6 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 	const bool scoped = size != 0;
 	uint64_t   now    = 0;
 	if (!scoped) {
-		const bool on = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites);
-		if (impl.mark_on.exchange(on, std::memory_order_acq_rel) != on) {
-#if defined(KYTY_SELF_MARKING)
-			kyty_selfmark_set_enabled(on);
-#endif
-			if (!on) {
-				UnmarkAllWritten();
-			}
-		}
 #if defined(KYTY_SELF_MARKING)
 		kyty_selfmark_service();
 #endif

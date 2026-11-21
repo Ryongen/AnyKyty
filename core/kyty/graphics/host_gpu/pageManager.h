@@ -46,7 +46,6 @@ public:
 	enum class MarkLeave { Release, Refuse, Forget };
 	[[nodiscard]] bool MarkWritten(uint64_t vaddr);
 	void               UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave);
-	void               UnmarkAllWritten();
 	[[nodiscard]] bool HasMarkedPages() const noexcept;
 	void               CollectMarkedWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
 

@@ -3,7 +3,6 @@
 
 #include "common/debugCounters.h"
 #include "common/guardedCopy.h"
-#include "common/runtimeSwitches.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -376,9 +375,7 @@ void InstallSelfMarking() {
     std::uintptr_t base  = 0;
     std::size_t    bytes = 0;
     GuestArena::GuestArenaRange_nid_postfix(&base, &bytes);
-    if (bytes != 0 && kyty_selfmark_init(base + bytes, &ExecutableNear, &GuestCodeAddress)) {
-        kyty_selfmark_set_enabled(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites));
-    }
+    if (bytes != 0) kyty_selfmark_init(base + bytes, &ExecutableNear, &GuestCodeAddress);
 #endif
 }
 
