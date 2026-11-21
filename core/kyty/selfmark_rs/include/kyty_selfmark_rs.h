@@ -15,8 +15,7 @@ enum {
 	KYTY_SELFMARK_SLOW_STORE = 2,
 	KYTY_SELFMARK_REFUSED    = 3,
 	KYTY_SELFMARK_BUSY       = 4,
-	KYTY_SELFMARK_INSIDE     = 5,
-	KYTY_SELFMARK_REDIRECT   = 6
+	KYTY_SELFMARK_INSIDE     = 5
 };
 
 enum {
@@ -55,8 +54,6 @@ typedef struct KytySelfMarkStats {
 	uint64_t busy;
 	uint64_t slow_faults;
 	uint64_t breaks;
-	uint64_t redirect_sites;
-	uint64_t redirect_faults;
 	uint64_t refusals[KYTY_SELFMARK_REFUSALS];
 } KytySelfMarkStats;
 

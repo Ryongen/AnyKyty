@@ -10,7 +10,6 @@ pub const OUTCOME_SLOW_STORE: u32 = 2;
 pub const OUTCOME_REFUSED: u32 = 3;
 pub const OUTCOME_BUSY: u32 = 4;
 pub const OUTCOME_INSIDE: u32 = 5;
-pub const OUTCOME_REDIRECT: u32 = 6;
 
 pub type NearAllocator = unsafe extern "C" fn(near: u64, bytes: u64) -> u64;
 pub type GuestCode = unsafe extern "C" fn(address: u64) -> bool;
@@ -21,7 +20,6 @@ const ARENAS: usize = 64;
 const SITE_SLOTS: usize = 1 << 15;
 const PROBES: usize = 96;
 const REFUSED: u64 = 1 << 63;
-const REDIRECT: u64 = 1 << 62;
 const REACH: u64 = 0x7FF0_0000;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -42,8 +40,6 @@ pub static REFUSALS: [AtomicU64; REFUSAL_COUNT] = [const { AtomicU64::new(0) }; 
 pub static BUSY: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_FAULTS: AtomicU64 = AtomicU64::new(0);
 pub static BREAKS: AtomicU64 = AtomicU64::new(0);
-pub static REDIRECT_SITES: AtomicU64 = AtomicU64::new(0);
-pub static REDIRECT_FAULTS: AtomicU64 = AtomicU64::new(0);
 
 pub fn configure(allocator: Option<NearAllocator>, guest: Option<GuestCode>) {
     ALLOCATOR.store(allocator.map_or(0, |function| function as usize), Ordering::Release);
@@ -182,36 +178,13 @@ unsafe fn jumps_to(site: u64, entry: u64) -> bool {
     site.wrapping_add(5).wrapping_add(i32::from_le_bytes(raw) as i64 as u64) == entry
 }
 
-unsafe fn still_original(site: u64, entry: u64) -> bool {
-    let word = core::ptr::read((entry + SLOW_AT as u64) as *const u64);
-    let slow = entry + (word & 0xFFFF);
-    let length = ((word >> 16) & 0xFF) as usize;
-    (0..length).all(|offset| core::ptr::read_volatile((site as *const u8).add(offset)) == core::ptr::read((slow as *const u8).add(offset)))
-}
-
-unsafe fn known_site(site: u64) -> Option<(u32, u64)> {
+unsafe fn patch(site: u64) -> (u32, u64) {
     let known = site_get(site);
     if known & REFUSED != 0 {
-        return Some((OUTCOME_REFUSED, known & !REFUSED));
+        return (OUTCOME_REFUSED, known & !REFUSED);
     }
-    if known & REDIRECT != 0 {
-        let entry = known & !REDIRECT;
-        return still_original(site, entry).then_some((OUTCOME_REDIRECT, entry));
-    }
-    if known != 0 {
-        if jumps_to(site, known) {
-            return Some((OUTCOME_PATCHED, known));
-        }
-        if PATCHING.load(Ordering::SeqCst) == site {
-            return Some((OUTCOME_BUSY, 0));
-        }
-    }
-    None
-}
-
-unsafe fn patch(site: u64) -> (u32, u64) {
-    if let Some(found) = known_site(site) {
-        return found;
+    if known != 0 && jumps_to(site, known) {
+        return (OUTCOME_PATCHED, known);
     }
     let guest = GUEST.load(Ordering::Acquire);
     if guest != 0 {
@@ -252,14 +225,6 @@ unsafe fn patch(site: u64) -> (u32, u64) {
     core::ptr::copy_nonoverlapping(built.bytes.as_ptr(), entry as *mut u8, SLOT);
     os::flush_code(entry, SLOT);
     ARENA_USED[arena].fetch_add(1, Ordering::Release);
-    if length < decode::PATCH_LEN {
-        if !site_put(site, REDIRECT | entry) {
-            REFUSALS[Refusal::TableFull as usize].fetch_add(1, Ordering::Relaxed);
-            return (OUTCOME_REFUSED, Refusal::TableFull as u64);
-        }
-        REDIRECT_SITES.fetch_add(1, Ordering::Relaxed);
-        return (OUTCOME_REDIRECT, entry);
-    }
     if !site_put(site, entry) {
         REFUSALS[Refusal::TableFull as usize].fetch_add(1, Ordering::Relaxed);
         return (OUTCOME_REFUSED, Refusal::TableFull as u64);
@@ -291,11 +256,17 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
         }
         return (OUTCOME_INSIDE, entry);
     }
-    if let Some(found) = known_site(address) {
-        if found.0 == OUTCOME_REDIRECT {
-            REDIRECT_FAULTS.fetch_add(1, Ordering::Relaxed);
+    let known = site_get(address);
+    if known & REFUSED != 0 {
+        return (OUTCOME_REFUSED, known & !REFUSED);
+    }
+    if known != 0 {
+        if jumps_to(address, known) {
+            return (OUTCOME_PATCHED, known);
         }
-        return found;
+        if PATCHING.load(Ordering::SeqCst) == address {
+            return (OUTCOME_BUSY, 0);
+        }
     }
     (OUTCOME_NONE, 0)
 }
