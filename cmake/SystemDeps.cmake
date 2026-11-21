@@ -5,6 +5,13 @@ set(ANYPS5_GLSLANG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/glslang")
 set(ANYPS5_SPIRV_HEADERS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/3rdparty/SPIRV-Headers")
 set(ANYPS5_GLSLANG_SOURCE_DIR "${CMAKE_SOURCE_DIR}/3rdparty/glslang")
 
+if(ANYPS5_GPU_BACKEND STREQUAL "kyty" AND ANYPS5_KYTY_SELF_MARKING)
+    find_program(ANYPS5_CARGO NAMES cargo HINTS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin")
+    if(NOT ANYPS5_CARGO)
+        message(FATAL_ERROR "ANYPS5_KYTY_SELF_MARKING builds core/kyty/selfmark_rs with cargo, which was not found: install Rust (https://rustup.rs), or configure with -DANYPS5_KYTY_SELF_MARKING=OFF")
+    endif()
+endif()
+
 if(NOT ANYPS5_USE_SYSTEM_DEPS)
     return()
 endif()

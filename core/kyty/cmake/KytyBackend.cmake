@@ -102,6 +102,7 @@ ExternalProject_Add(kyty_gpu
         -DKYTY_PGO_PROFILE=${anyps5KytyPgo}
         -DKYTY_PGO_GENERATE=${ANYPS5_KYTY_PGO_GENERATE}
         -DKYTY_SELF_MARKING=${ANYPS5_KYTY_SELF_MARKING}
+        -DKYTY_CARGO=${ANYPS5_CARGO}
         ${anyps5KytyPlatformArgs}
     BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target kyty_gpu_bundle --parallel ${ANYPS5_KYTY_JOBS}
     INSTALL_COMMAND ""

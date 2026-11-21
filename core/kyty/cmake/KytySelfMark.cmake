@@ -1,6 +1,5 @@
-find_program(KYTY_CARGO NAMES cargo HINTS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin")
 if(NOT KYTY_CARGO)
-    message(FATAL_ERROR "KYTY_SELF_MARKING builds core/kyty/selfmark_rs with cargo, which was not found: install Rust (https://rustup.rs), or configure AnyPS5 with -DANYPS5_KYTY_SELF_MARKING=OFF")
+    message(FATAL_ERROR "KYTY_SELF_MARKING builds core/kyty/selfmark_rs with cargo: set KYTY_CARGO to its path (the AnyPS5 build finds it and passes it), or configure AnyPS5 with -DANYPS5_KYTY_SELF_MARKING=OFF")
 endif()
 set(kytySelfMarkTargetDir "${CMAKE_BINARY_DIR}/selfmark_rs")
 set(kytySelfMarkArgs build --release --offline --lib --manifest-path "${KYTY_DIR}/selfmark_rs/Cargo.toml")

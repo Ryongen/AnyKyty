@@ -298,6 +298,7 @@ if(KYTY_THREAD_SAFETY AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 option(KYTY_SELF_MARKING "Patch guest write sites at their first fault so that they mark their own pages; builds the Rust crate selfmark_rs with cargo" OFF)
+set(KYTY_CARGO "" CACHE FILEPATH "cargo, which builds the Rust crate selfmark_rs when KYTY_SELF_MARKING is on")
 set(KYTY_SELF_MARKING_ARCHIVE "")
 if(KYTY_SELF_MARKING)
     include("${KYTY_DIR}/cmake/KytySelfMark.cmake")
