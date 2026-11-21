@@ -1,0 +1,23 @@
+[package]
+name = "kyty_selfmark_rs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+debug = 1
+codegen-units = 1
+lto = false
+
+[profile.dev]
+panic = "abort"

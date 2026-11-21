@@ -3,6 +3,7 @@
 
 #include "common/debugCounters.h"
 #include "common/guardedCopy.h"
+#include "common/runtimeSwitches.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -12,14 +13,24 @@
 
 #include "prx/libSceAgcDriver/KytyShim/src/FaultReplay.hpp"
 
+#if defined(KYTY_SELF_MARKING)
+#include "kyty_selfmark_rs.h"
+#include "prx/libkernel/Pthread/include/Pthread.hpp"
+#endif
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <string_view>
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <csignal>
+#include <dlfcn.h>
+#include <link.h>
+#include <sys/mman.h>
 #include <ucontext.h>
 #endif
 
@@ -119,6 +130,16 @@ void FinishReplayAfterReadback(FaultContext& context, std::uint64_t address) {
 
 #ifndef _WIN32
 void OnTrap(int signal, siginfo_t* info, void* native) {
+#if defined(KYTY_SELF_MARKING)
+    if (native != nullptr) {
+        auto& context = *static_cast<ucontext_t*>(native);
+        const auto resume = kyty_selfmark_breakpoint(static_cast<std::uint64_t>(context.uc_mcontext.gregs[REG_RIP]) - 1);
+        if (resume != 0) {
+            context.uc_mcontext.gregs[REG_RIP] = static_cast<greg_t>(resume);
+            return;
+        }
+    }
+#endif
     if (native != nullptr && FaultReplay::Finish(*static_cast<ucontext_t*>(native))) return;
     if ((g_previous_trap.sa_flags & SA_SIGINFO) != 0) {
         if (g_previous_trap.sa_sigaction != nullptr) {
@@ -140,6 +161,156 @@ bool PrepareHostWrite(std::uintptr_t address, std::size_t bytes) {
     return Libs::LibKernel::Memory::TryPrepareHostWrite(address, bytes);
 }
 
+#if defined(KYTY_SELF_MARKING)
+constexpr std::uint64_t MarkPage     = 4096;
+constexpr std::uint64_t MarkGranule  = 64 * 1024;
+constexpr std::uint64_t MarkReach    = 0x70000000;
+constexpr std::uint64_t MarkStep     = 16 * 1024 * 1024;
+
+bool GuestCodeAddress(std::uint64_t address) {
+    if (GuestArena::GuestArenaContains_nid_postfix(reinterpret_cast<const void*>(address), 1)) return true;
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(reinterpret_cast<const void*>(address), &info, sizeof(info)) != sizeof(info) || info.Type != MEM_IMAGE) return false;
+    const auto* image    = static_cast<const unsigned char*>(info.AllocationBase);
+    const auto* dos      = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
+    const auto* nt       = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image + dos->e_lfanew);
+    const auto* sections = IMAGE_FIRST_SECTION(nt);
+    const auto  rva      = address - reinterpret_cast<std::uint64_t>(image);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        if (std::memcmp(sections[i].Name, ".elf", 4) == 0 && rva >= sections[i].VirtualAddress &&
+            rva < std::uint64_t{sections[i].VirtualAddress} + sections[i].Misc.VirtualSize) {
+            return true;
+        }
+    }
+    return false;
+#else
+    dl_find_object object{};
+    if (_dl_find_object(reinterpret_cast<void*>(address), &object) != 0 || object.dlfo_link_map == nullptr) return false;
+    const std::string_view name = object.dlfo_link_map->l_name != nullptr ? object.dlfo_link_map->l_name : "";
+    return name.ends_with(".guest.prx");
+#endif
+}
+
+std::uint64_t ExecutableAt(std::uint64_t address, std::uint64_t bytes, bool replace) {
+#ifdef _WIN32
+    (void)replace;
+    return reinterpret_cast<std::uint64_t>(VirtualAlloc(reinterpret_cast<void*>(address), bytes, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+#else
+    void* const mapped = ::mmap(reinterpret_cast<void*>(address), bytes, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                MAP_PRIVATE | MAP_ANONYMOUS | (replace ? MAP_FIXED : MAP_FIXED_NOREPLACE), -1, 0);
+    if (mapped == MAP_FAILED) return 0;
+    if (reinterpret_cast<std::uint64_t>(mapped) != address) {
+        ::munmap(mapped, bytes);
+        return 0;
+    }
+    return address;
+#endif
+}
+
+std::uint64_t ExecutableNear(std::uint64_t site, std::uint64_t bytes) {
+    const auto size = (bytes + MarkGranule - 1) & ~(MarkGranule - 1);
+    const auto base = site & ~(MarkGranule - 1);
+    if (GuestArena::GuestArenaContains_nid_postfix(reinterpret_cast<const void*>(site), 1)) {
+        try {
+            void* const memory = GuestArena::GuestArenaAllocateAtOrAbove_nid_postfix(base, size, MarkGranule);
+            if (memory == nullptr) return 0;
+            const auto address = reinterpret_cast<std::uint64_t>(memory);
+            if (address + size > site + MarkReach) {
+                GuestArena::GuestArenaRelease_nid_postfix(memory, size);
+                return 0;
+            }
+#ifdef _WIN32
+            GuestArena::GuestArenaCommit_nid_postfix(memory, size, PAGE_EXECUTE_READWRITE, MarkGranule);
+            return address;
+#else
+            return ExecutableAt(address, size, true);
+#endif
+        } catch (...) {
+            return 0;
+        }
+    }
+    for (std::uint64_t distance = MarkStep; distance < MarkReach; distance += MarkStep) {
+        if (const auto above = ExecutableAt(base + distance, size, false); above != 0) return above;
+        if (base > distance + MarkGranule) {
+            if (const auto below = ExecutableAt(base - distance, size, false); below != 0) return below;
+        }
+    }
+    return 0;
+}
+
+void SetInstruction(FaultContext& context, std::uint64_t address) {
+#ifdef _WIN32
+    context.Rip = address;
+#else
+    context.uc_mcontext.gregs[REG_RIP] = static_cast<greg_t>(address);
+#endif
+}
+
+std::uint64_t MarkedTarget(const FaultContext& context, std::uint64_t entry) {
+#ifdef _WIN32
+    const std::uint64_t registers[16] = {context.Rax, context.Rcx, context.Rdx, context.Rbx, context.Rsp, context.Rbp, context.Rsi, context.Rdi,
+                                         context.R8,  context.R9,  context.R10, context.R11, context.R12, context.R13, context.R14, context.R15};
+#else
+    const auto&         g             = context.uc_mcontext.gregs;
+    const std::uint64_t registers[16] = {static_cast<std::uint64_t>(g[REG_RAX]), static_cast<std::uint64_t>(g[REG_RCX]), static_cast<std::uint64_t>(g[REG_RDX]),
+                                         static_cast<std::uint64_t>(g[REG_RBX]), static_cast<std::uint64_t>(g[REG_RSP]), static_cast<std::uint64_t>(g[REG_RBP]),
+                                         static_cast<std::uint64_t>(g[REG_RSI]), static_cast<std::uint64_t>(g[REG_RDI]), static_cast<std::uint64_t>(g[REG_R8]),
+                                         static_cast<std::uint64_t>(g[REG_R9]),  static_cast<std::uint64_t>(g[REG_R10]), static_cast<std::uint64_t>(g[REG_R11]),
+                                         static_cast<std::uint64_t>(g[REG_R12]), static_cast<std::uint64_t>(g[REG_R13]), static_cast<std::uint64_t>(g[REG_R14]),
+                                         static_cast<std::uint64_t>(g[REG_R15])};
+#endif
+    return kyty_selfmark_target(entry, registers);
+}
+
+bool MarkedFastPath(std::uint64_t first, std::uint64_t last) {
+    const auto delta = kyty_selfmark_armed(first);
+    return delta != 0 && (last == first || kyty_selfmark_armed(last) == delta);
+}
+
+struct MarkedWrite {
+    std::uint64_t entry  = 0;
+    std::uint64_t first  = 0;
+    std::uint64_t last   = 0;
+    bool          resume = false;
+    bool          served = false;
+};
+
+MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::uint64_t rip) {
+    namespace Memory = Libs::LibKernel::Memory;
+    MarkedWrite write;
+    const auto  page = address & ~(MarkPage - 1);
+    if (!Memory::GuestRangeWatched(page, MarkPage) && kyty_selfmark_armed(page) == 0) return write;
+#ifndef _WIN32
+    GuestDeliveryHold_nid_no_patch();
+#endif
+    const auto fault = kyty_selfmark_write_fault(rip);
+#ifndef _WIN32
+    GuestDeliveryRelease_nid_no_patch();
+#endif
+    if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE) {
+        Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
+        return write;
+    }
+    const auto target = MarkedTarget(context, fault.entry);
+    write.entry       = fault.entry;
+    write.resume      = fault.outcome == KYTY_SELFMARK_SLOW_STORE;
+    write.first       = target & ~(MarkPage - 1);
+    write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
+    const bool armed  = Memory::MarkWrittenPage(write.first) && (write.last == write.first || Memory::MarkWrittenPage(write.last));
+    write.served      = armed && MarkedFastPath(write.first, write.last);
+    return write;
+}
+
+void FinishMarkedWrite(FaultContext& context, const MarkedWrite& write) {
+    if (write.entry == 0) return;
+    if (!write.served && !MarkedFastPath(write.first, write.last)) {
+        Libs::LibKernel::Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true);
+    }
+    if (write.resume) SetInstruction(context, write.entry);
+}
+#endif
+
 bool ResolveFault(FaultContext& context, GpuAccess access, std::uint64_t address, std::uint64_t rip) {
     namespace Memory = Libs::LibKernel::Memory;
     namespace Walker = Libs::Graphics::ShaderRecompiler::IR;
@@ -159,13 +330,29 @@ bool ResolveFault(FaultContext& context, GpuAccess access, std::uint64_t address
     if (access == GpuAccess::Read && TryReplayOnBacking(context, address)) {
         return true;
     }
+#if defined(KYTY_SELF_MARKING)
+    MarkedWrite marked;
+    if (access == GpuAccess::Write) {
+        marked = MarkWrite(context, address, rip);
+        if (marked.served) {
+            FinishMarkedWrite(context, marked);
+            return true;
+        }
+    }
+#endif
     const bool after = access == GpuAccess::Read && ReplayAfterReadbackEnabled();
     if (after) Memory::AllowReplayAfterReadback();
     if (Memory::HandleGpuFault(access, address)) {
         Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
         if (after) FinishReplayAfterReadback(context, address);
+#if defined(KYTY_SELF_MARKING)
+        FinishMarkedWrite(context, marked);
+#endif
         return true;
     }
+#if defined(KYTY_SELF_MARKING)
+    if (marked.resume) SetInstruction(context, kyty_selfmark_site(marked.entry));
+#endif
     if (after) FinishReplayAfterReadback(context, address);
     if (const auto length = Walker::SrtWalkerLoadLength(rip); length != 0) {
         CompleteWalkerLoad(context, length, 0);
@@ -176,11 +363,38 @@ bool ResolveFault(FaultContext& context, GpuAccess access, std::uint64_t address
 
 }
 
+namespace {
+
+void InstallSelfMarking() {
+#if defined(KYTY_SELF_MARKING)
+    std::uintptr_t base  = 0;
+    std::size_t    bytes = 0;
+    GuestArena::GuestArenaRange_nid_postfix(&base, &bytes);
+    if (bytes != 0 && kyty_selfmark_init(base + bytes, &ExecutableNear, &GuestCodeAddress)) {
+        kyty_selfmark_set_enabled(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites));
+    }
+#endif
+}
+
+}
+
 #ifdef _WIN32
 bool HandleHostFault(void* exceptionPointers) {
     auto* exception = static_cast<EXCEPTION_POINTERS*>(exceptionPointers);
     if (exception == nullptr || exception->ExceptionRecord == nullptr || exception->ContextRecord == nullptr) return false;
     const auto& record = *exception->ExceptionRecord;
+#if defined(KYTY_SELF_MARKING)
+    if (record.ExceptionCode == EXCEPTION_BREAKPOINT) {
+        const auto resume = kyty_selfmark_breakpoint(static_cast<std::uint64_t>(exception->ContextRecord->Rip));
+        if (resume == 0) return false;
+        exception->ContextRecord->Rip = resume;
+        return true;
+    }
+    if (record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && record.NumberParameters >= 2 &&
+        kyty_selfmark_table_fault(static_cast<std::uint64_t>(record.ExceptionInformation[1]))) {
+        return true;
+    }
+#endif
     if (record.ExceptionCode == EXCEPTION_SINGLE_STEP) return FaultReplay::Finish(*exception->ContextRecord);
     const bool guardPage = record.ExceptionCode == STATUS_GUARD_PAGE_VIOLATION;
     if ((record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION && !guardPage) || record.NumberParameters < 2) return false;
@@ -194,6 +408,7 @@ bool HandleHostFault(void* exceptionPointers) {
 }
 
 void InstallFaultChain() {
+    InstallSelfMarking();
     GuestArena::GuestArenaSetHostWritePreparer_nid_no_patch(&PrepareHostWrite);
     GuestArena::GuestArenaSetGpuFaultHandler_nid_no_patch(&HandleHostFault);
     g_single_step_ready.store(true, std::memory_order_release);
@@ -212,6 +427,7 @@ bool HandleHostFault(int signal, siginfo_t* info, void* native) {
 }
 
 void InstallFaultChain() {
+    InstallSelfMarking();
     if (!g_trap_installed) {
         struct sigaction action {};
         action.sa_sigaction = &OnTrap;

@@ -194,6 +194,8 @@ void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 [[nodiscard]] bool RetryTransientUnmapFault(uint64_t fault_vaddr, uint64_t window) noexcept;
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
+[[nodiscard]] bool MarkWrittenPage(uint64_t vaddr) noexcept;
+void               UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse) noexcept;
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);

@@ -680,6 +680,7 @@ void OnProtectionChange(std::uintptr_t address, std::size_t bytes, int protectio
 	}
 	Pages().StoreExecutable(address, address + bytes, protection >= 0 && (protection & 0x04) != 0);
 	ForgetProbes(address, bytes);
+	if (protection < 0 || (protection & 0x02) == 0) UnmarkWrittenPages(address, bytes, false);
 }
 
 void EnableViewOnce() {

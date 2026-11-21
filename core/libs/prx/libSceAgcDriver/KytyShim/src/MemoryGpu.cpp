@@ -308,4 +308,14 @@ bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noex
 	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
 }
 
+bool MarkWrittenPage(uint64_t vaddr) noexcept {
+	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, 1) && g_gpu_resources->MarkWritten(vaddr);
+}
+
+void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse) noexcept {
+	if (g_gpu_resources != nullptr && size != 0 && IsGpuAddressRange(vaddr, size)) {
+		g_gpu_resources->UnmarkWritten(vaddr, size, refuse);
+	}
+}
+
 }

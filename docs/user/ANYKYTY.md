@@ -104,7 +104,7 @@ AnyKyty is the `AnyKyty` branch of this fork, its default branch. The default `-
 
 ### Linux
 
-Needs Git, CMake 3.21 or newer, GCC 14, Ninja and LLVM 21 (`clang`, `clang++`, `ld.lld` of the same major version, on `PATH`):
+Needs Git, CMake 3.21 or newer, GCC 14, Ninja, LLVM 21 (`clang`, `clang++`, `ld.lld` of the same major version, on `PATH`) and Rust (`cargo`, a stable toolchain from [rustup](https://rustup.rs) or from the distribution; no crate is downloaded):
 
 ```sh
 sudo apt-get install -y gcc-14 g++-14 ninja-build pkg-config ccache \
@@ -125,7 +125,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
 cmake --build build --target kyty_gpu libs relinker --parallel "$(nproc)"
 ```
 
-`-DANYPS5_KYTY_THIN_LTO=OFF` turns off ThinLTO and the pre-link of the Kyty core, which is on by default. The Kyty core is also optimized with the profile kept in `core/kyty/pgo/` (profile-guided optimization, which needs the `llvm-profdata` of the same LLVM beside `clang`); `-DANYPS5_KYTY_PGO=` builds it without, and [the PGO document](../dev/KYTY_PGO.md) explains how to record the profile again. The CI also builds and runs the Kyty shim tests on Linux; the exact commands are in the `linux` job of the workflow.
+`cargo` builds `core/kyty/selfmark_rs`, which patches the guest's write instructions so that they mark their own pages instead of faulting on each page; `-DANYPS5_KYTY_SELF_MARKING=OFF` builds without it and without Rust. `-DANYPS5_KYTY_THIN_LTO=OFF` turns off ThinLTO and the pre-link of the Kyty core, which is on by default. The Kyty core is also optimized with the profile kept in `core/kyty/pgo/` (profile-guided optimization, which needs the `llvm-profdata` of the same LLVM beside `clang`); `-DANYPS5_KYTY_PGO=` builds it without, and [the PGO document](../dev/KYTY_PGO.md) explains how to record the profile again. The CI also builds and runs the Kyty shim tests on Linux; the exact commands are in the `linux` job of the workflow.
 
 ### Windows
 
@@ -144,7 +144,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCM
 cmake --build build --target kyty_gpu libs relinker --parallel %NUMBER_OF_PROCESSORS%
 ```
 
-ThinLTO is off on Windows, since lld cannot pre-link Windows objects, and Kyty's pipeline helper processes are not used. The runtime DLLs of the toolchain go beside the libraries, as described in [Windows setup and troubleshooting](../dev/BUILD.md#windows-setup-and-troubleshooting).
+ThinLTO is off on Windows, since lld cannot pre-link Windows objects, and Kyty's pipeline helper processes are not used. The write site patcher is off by default on Windows, where it has not been built or run yet: `-DANYPS5_KYTY_SELF_MARKING=ON` needs `cargo` with the `x86_64-pc-windows-gnu` target (`rustup target add x86_64-pc-windows-gnu`) and is not available with `ANYPS5_KYTY_DLL`. The runtime DLLs of the toolchain go beside the libraries, as described in [Windows setup and troubleshooting](../dev/BUILD.md#windows-setup-and-troubleshooting).
 
 ## Running a game
 

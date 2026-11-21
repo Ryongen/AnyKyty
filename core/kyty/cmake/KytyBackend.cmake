@@ -75,6 +75,13 @@ else()
         "${ANYPS5_KYTY_BINARY_DIR}/3rdparty/SPIRV-Tools/source/libSPIRV-Tools.a"
     )
 endif()
+if(ANYPS5_KYTY_SELF_MARKING AND NOT ANYPS5_KYTY_THIN_LTO)
+    if(WIN32)
+        list(APPEND ANYPS5_KYTY_ARCHIVES "${ANYPS5_KYTY_BINARY_DIR}/selfmark_rs/x86_64-pc-windows-gnu/release/libkyty_selfmark_rs.a")
+    else()
+        list(APPEND ANYPS5_KYTY_ARCHIVES "${ANYPS5_KYTY_BINARY_DIR}/selfmark_rs/release/libkyty_selfmark_rs.a")
+    endif()
+endif()
 ExternalProject_Add(kyty_gpu
     SOURCE_DIR "${PROJECT_SOURCE_DIR}/core/kyty"
     BINARY_DIR "${ANYPS5_KYTY_BINARY_DIR}"
@@ -94,6 +101,7 @@ ExternalProject_Add(kyty_gpu
         -DKYTY_THIN_LTO_JOBS=${ANYPS5_KYTY_JOBS}
         -DKYTY_PGO_PROFILE=${anyps5KytyPgo}
         -DKYTY_PGO_GENERATE=${ANYPS5_KYTY_PGO_GENERATE}
+        -DKYTY_SELF_MARKING=${ANYPS5_KYTY_SELF_MARKING}
         ${anyps5KytyPlatformArgs}
     BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target kyty_gpu_bundle --parallel ${ANYPS5_KYTY_JOBS}
     INSTALL_COMMAND ""
@@ -122,6 +130,10 @@ target_include_directories(anyps5_kyty_gpu SYSTEM
         "${PROJECT_SOURCE_DIR}/3rdparty/magic_enum/include/magic_enum"
         "${PROJECT_SOURCE_DIR}/3rdparty/tracy/public"
 )
+if(ANYPS5_KYTY_SELF_MARKING)
+    target_compile_definitions(anyps5_kyty_gpu INTERFACE KYTY_SELF_MARKING=1)
+    target_include_directories(anyps5_kyty_gpu INTERFACE "${PROJECT_SOURCE_DIR}/core/kyty/selfmark_rs/include")
+endif()
 target_compile_definitions(anyps5_kyty_gpu
     INTERFACE
         ANYPS5_KYTY=1

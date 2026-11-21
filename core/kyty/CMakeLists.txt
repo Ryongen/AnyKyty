@@ -297,6 +297,12 @@ if(KYTY_THREAD_SAFETY AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_property(SOURCE ${KYTY_THREAD_SAFETY_ERROR_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -Werror=thread-safety)
 endif()
 
+option(KYTY_SELF_MARKING "Patch guest write sites at their first fault so that they mark their own pages; builds the Rust crate selfmark_rs with cargo" OFF)
+set(KYTY_SELF_MARKING_ARCHIVE "")
+if(KYTY_SELF_MARKING)
+    include("${KYTY_DIR}/cmake/KytySelfMark.cmake")
+endif()
+
 option(KYTY_ENABLE_ASAN "Instrument the Kyty renderer with AddressSanitizer" OFF)
 option(KYTY_ENABLE_TSAN "Instrument the Kyty renderer with ThreadSanitizer" OFF)
 if(KYTY_ENABLE_ASAN AND KYTY_ENABLE_TSAN)
@@ -355,6 +361,9 @@ endforeach()
 option(KYTY_THIN_LTO "Optimize kyty_gpu across translation units with ThinLTO and pre-link it with lld into one native object" ON)
 set(KYTY_THIN_LTO_JOBS "0" CACHE STRING "Parallel ThinLTO back-end jobs of the lld pre-link, 0 for lld's default")
 set(KYTY_BUNDLE_TARGETS kyty_gpu fmt xxhash TracyClient zarchive libzstd_static SPIRV-Tools-opt SPIRV-Tools-static)
+if(KYTY_SELF_MARKING)
+    list(APPEND KYTY_BUNDLE_TARGETS kyty_selfmark_rs)
+endif()
 if(KYTY_THIN_LTO AND WIN32 AND NOT KYTY_DLL)
     message(FATAL_ERROR "KYTY_THIN_LTO pre-links kyty_gpu with lld -r, which lld cannot do for Windows (COFF) objects: configure AnyPS5 with -DANYPS5_KYTY_THIN_LTO=OFF")
 endif()
@@ -391,10 +400,11 @@ if(KYTY_THIN_LTO)
         COMMAND "${CMAKE_CXX_COMPILER}" ${kytyPrelinkFlags} ${kytyPrelinkOptions} -o "${kytyPrelinkObject}"
                 -Wl,--whole-archive "$<TARGET_FILE:kyty_gpu>" "$<TARGET_FILE:fmt>" "$<TARGET_FILE:xxhash>" "$<TARGET_FILE:TracyClient>" -Wl,--no-whole-archive
                 "$<TARGET_FILE:zarchive>" "$<TARGET_FILE:libzstd_static>" "$<TARGET_FILE:SPIRV-Tools-opt>" "$<TARGET_FILE:SPIRV-Tools-static>"
+                ${KYTY_SELF_MARKING_ARCHIVE}
         COMMAND "${CMAKE_COMMAND}" -E rm -f "${kytyPrelinkArchive}"
         COMMAND "${CMAKE_AR}" qcD "${kytyPrelinkArchive}" "${kytyPrelinkObject}"
         COMMAND "${CMAKE_RANLIB}" -D "${kytyPrelinkArchive}"
-        DEPENDS ${KYTY_BUNDLE_TARGETS}
+        DEPENDS ${KYTY_BUNDLE_TARGETS} ${KYTY_SELF_MARKING_ARCHIVE}
         BYPRODUCTS "${kytyPrelinkObject}"
         COMMENT "Pre-linking kyty_gpu with ThinLTO into one native object"
         VERBATIM

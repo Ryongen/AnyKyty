@@ -43,6 +43,12 @@ public:
 	void CollectHotPageWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
 	void ForgetHotPages(uint64_t vaddr, uint64_t size);
 
+	[[nodiscard]] bool MarkWritten(uint64_t vaddr);
+	void               UnmarkWritten(uint64_t vaddr, uint64_t size, bool refuse);
+	void               UnmarkAllWritten();
+	[[nodiscard]] bool HasMarkedPages() const noexcept;
+	void               CollectMarkedWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
+
 private:
 	struct Impl;
 	std::unique_ptr<Impl> m_impl;

@@ -120,6 +120,26 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 }
 
 void RenderContext::CollectHotPageWrites(uint64_t vaddr, uint64_t size) {
+	m_page_manager.CollectMarkedWrites(
+	    [](void* context, uint64_t begin, uint64_t end) {
+		    auto&      self    = *static_cast<RenderContext*>(context);
+		    const auto deliver = [&self](uint64_t address, uint64_t bytes) {
+			    self.m_buffer_cache.InvalidateMemory(address, bytes, true);
+			    self.m_texture_cache.InvalidateMemory(address, bytes);
+			    self.m_image_heap.InvalidateMemory(address, bytes);
+			    self.m_strict_watch.InvalidateMemory(address, bytes);
+		    };
+		    if (self.IsMapped(begin, end - begin)) {
+			    deliver(begin, end - begin);
+			    return;
+		    }
+		    for (auto page = begin; page < end; page += TRACKER_PAGE_SIZE) {
+			    if (self.IsMapped(page, TRACKER_PAGE_SIZE)) {
+				    deliver(page, TRACKER_PAGE_SIZE);
+			    }
+		    }
+	    },
+	    this, vaddr, size);
 	m_page_manager.CollectHotPageWrites(
 	    [](void* context, uint64_t begin, uint64_t end) {
 		    auto& self = *static_cast<RenderContext*>(context);
@@ -224,6 +244,7 @@ void RenderContext::PrepareGpuWrite(const void* destination, uint64_t size) noex
 	if (size == 0 || !GuestRange {vaddr, size}.Valid()) {
 		return;
 	}
+	m_page_manager.UnmarkWritten(vaddr, size, true);
 	for (auto page = vaddr & ~(page_size - 1); page < vaddr + size; page += page_size) {
 		if (m_page_manager.IsWatched(page)) {
 			(void)HandleFault(PageFaultAccess::Write, std::max(page, vaddr));
@@ -251,6 +272,7 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	if (!IsMapped(vaddr, size)) {
 		return false;
 	}
+	m_page_manager.UnmarkWritten(vaddr, size, true);
 	m_buffer_cache.InvalidateMemory(vaddr, size);
 	m_texture_cache.InvalidateMemory(vaddr, size);
 	m_image_heap.InvalidateMemory(vaddr, size);
@@ -263,6 +285,7 @@ bool RenderContext::InvalidateMemoryForWrite(uint64_t vaddr, uint64_t size) {
 	if (!IsMapped(vaddr, size)) {
 		return false;
 	}
+	m_page_manager.UnmarkWritten(vaddr, size, true);
 	m_buffer_cache.InvalidateMemoryForWrite(vaddr, size);
 	m_texture_cache.InvalidateMemory(vaddr, size);
 	m_image_heap.InvalidateMemory(vaddr, size);
@@ -364,6 +387,8 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	}
 	const auto unmap = [this, vaddr, size] {
 		m_page_manager.ForgetHotPages(vaddr, size);
+		m_page_manager.UnmarkWritten(vaddr, size, false);
+		m_page_manager.CollectMarkedWrites([](void*, uint64_t, uint64_t) {}, nullptr, vaddr, size);
 		if (m_command_scheduler.Active()) {
 			m_command_scheduler.PopPendingOperations();
 		}

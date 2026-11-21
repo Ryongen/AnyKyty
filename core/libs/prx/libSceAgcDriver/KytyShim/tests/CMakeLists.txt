@@ -167,6 +167,23 @@ if(NOT ANYPS5_KYTY_DLL AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
             PASS_REGULAR_EXPRESSION "kyty_shim_buffer_cache_pages: ok" FAIL_REGULAR_EXPRESSION "FAILED")
 endif()
 
+if(ANYPS5_KYTY_SELF_MARKING AND NOT ANYPS5_KYTY_DLL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(libSceAgcDriver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/SelfMarkingWrites.cpp)
+    add_test_executable(kyty_shim_self_marking_writes_tests ${CMAKE_CURRENT_SOURCE_DIR}/SelfMarkingWritesMain.cpp)
+    configure_host_test_executable(kyty_shim_self_marking_writes_tests)
+    target_link_libraries(kyty_shim_self_marking_writes_tests PRIVATE libSceAgcDriver libkernel libc)
+    add_test(NAME kyty_shim_self_marking_writes COMMAND kyty_shim_self_marking_writes_tests)
+    set_tests_properties(kyty_shim_self_marking_writes PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+            ENVIRONMENT "KYTY_GPU_PIPELINE=0"
+            PASS_REGULAR_EXPRESSION "kyty_shim_self_marking_writes: ok" FAIL_REGULAR_EXPRESSION "FAILED")
+    find_program(ANYPS5_CARGO NAMES cargo HINTS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin")
+    if(ANYPS5_CARGO)
+        add_test(NAME kyty_shim_selfmark_rs COMMAND ${CMAKE_COMMAND} -E env "CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/selfmark_rs_tests"
+                ${ANYPS5_CARGO} test --offline --manifest-path ${CMAKE_SOURCE_DIR}/core/kyty/selfmark_rs/Cargo.toml)
+        set_tests_properties(kyty_shim_selfmark_rs PROPERTIES TIMEOUT 300 FAIL_REGULAR_EXPRESSION "FAILED;panicked")
+    endif()
+endif()
+
 if(WIN32)
     add_test_executable(kyty_shim_emutls_tests ${CMAKE_CURRENT_SOURCE_DIR}/EmuTlsThreadExit.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/EmuTls.cpp)
     set_target_properties(kyty_shim_emutls_tests PROPERTIES CXX_EXTENSIONS OFF)
