@@ -238,6 +238,72 @@ std::uint64_t ExecutableNear(std::uint64_t site, std::uint64_t bytes) {
     return 0;
 }
 
+std::uint64_t ExecutableFixed(std::uint64_t address, std::uint64_t* bytes) {
+    if (GuestArena::GuestArenaContains_nid_postfix(reinterpret_cast<const void*>(address), 1)) {
+        const auto base = address & ~(MarkGranule - 1);
+        try {
+            void* const memory = GuestArena::GuestArenaAllocateAtOrAbove_nid_postfix(base, MarkGranule, MarkGranule);
+            if (memory == nullptr) return 0;
+            if (reinterpret_cast<std::uint64_t>(memory) != base) {
+                GuestArena::GuestArenaRelease_nid_postfix(memory, MarkGranule);
+                return 0;
+            }
+#ifdef _WIN32
+            GuestArena::GuestArenaCommit_nid_postfix(memory, MarkGranule, PAGE_EXECUTE_READWRITE, MarkGranule);
+#else
+            if (ExecutableAt(base, MarkGranule, true) == 0) {
+                GuestArena::GuestArenaRelease_nid_postfix(memory, MarkGranule);
+                return 0;
+            }
+#endif
+            *bytes = MarkGranule;
+            return base;
+        } catch (...) {
+            return 0;
+        }
+    }
+#ifdef _WIN32
+    constexpr std::uint64_t unit = MarkGranule;
+#else
+    constexpr std::uint64_t unit = MarkPage;
+#endif
+    const auto base = address & ~(unit - 1);
+    if (ExecutableAt(base, unit, false) == 0) return 0;
+    *bytes = unit;
+    return base;
+}
+
+std::uint32_t HostWriter(std::uint64_t rip) {
+#ifdef _WIN32
+    (void)rip;
+    return KYTY_SELFMARK_NOTE_HOST_OTHER;
+#else
+    dl_find_object object{};
+    if (_dl_find_object(reinterpret_cast<void*>(rip), &object) != 0 || object.dlfo_link_map == nullptr) return KYTY_SELFMARK_NOTE_HOST_OTHER;
+    const std::string_view name = object.dlfo_link_map->l_name != nullptr ? object.dlfo_link_map->l_name : "";
+    const auto             file = name.substr(name.find_last_of('/') + 1);
+    return file.starts_with("libSceAgc.") ? KYTY_SELFMARK_NOTE_HOST_AGC : KYTY_SELFMARK_NOTE_HOST_OTHER;
+#endif
+}
+
+std::uint32_t WriterKind(const KytySelfMarkFault& fault, std::uint64_t rip) {
+    switch (fault.outcome) {
+        case KYTY_SELFMARK_PATCHED:
+        case KYTY_SELFMARK_SLOW_STORE: return KYTY_SELFMARK_NOTE_PATCHED_UNARMED;
+        case KYTY_SELFMARK_BUSY: return KYTY_SELFMARK_NOTE_GUEST_BUSY;
+        case KYTY_SELFMARK_REFUSED:
+            switch (fault.reason) {
+                case KYTY_SELFMARK_REFUSAL_SHORT: return KYTY_SELFMARK_NOTE_GUEST_SHORT;
+                case KYTY_SELFMARK_REFUSAL_NOT_STORE: return KYTY_SELFMARK_NOTE_GUEST_NOT_STORE;
+                case KYTY_SELFMARK_REFUSAL_NO_WINDOW: return KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW;
+                case KYTY_SELFMARK_REFUSAL_FROZEN: return KYTY_SELFMARK_NOTE_GUEST_FROZEN;
+                case KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE: return HostWriter(rip);
+                default: return KYTY_SELFMARK_NOTE_GUEST_OTHER;
+            }
+        default: return GuestCodeAddress(rip) ? KYTY_SELFMARK_NOTE_UNTRACKED : HostWriter(rip);
+    }
+}
+
 void SetInstruction(FaultContext& context, std::uint64_t address) {
 #ifdef _WIN32
     context.Rip = address;
@@ -294,7 +360,12 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
 #endif
     }
     if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE) {
-        if (PageArmed(page)) Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
+        const auto kind = WriterKind(fault, rip);
+        kyty_selfmark_note(kind);
+        if (PageArmed(page)) {
+            kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK + kind);
+            Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
+        }
         return write;
     }
     const auto target = MarkedTarget(context, fault.entry);
@@ -304,12 +375,14 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
     write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
     const auto arm    = [](std::uint64_t at) { return kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at); };
     write.served      = arm(write.first) && (write.last == write.first || arm(write.last)) && MarkedFastPath(write.first, write.last);
+    kyty_selfmark_note(write.served ? KYTY_SELFMARK_NOTE_SERVED : KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
     return write;
 }
 
 void FinishMarkedWrite(FaultContext& context, const MarkedWrite& write) {
     if (write.entry == 0) return;
     if (!write.served && !MarkedFastPath(write.first, write.last) && (PageArmed(write.first) || PageArmed(write.last))) {
+        kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK + KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
         Libs::LibKernel::Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true);
     }
     if (write.resume) SetInstruction(context, write.entry);
@@ -375,7 +448,7 @@ void InstallSelfMarking() {
     std::uintptr_t base  = 0;
     std::size_t    bytes = 0;
     GuestArena::GuestArenaRange_nid_postfix(&base, &bytes);
-    if (bytes != 0) kyty_selfmark_init(base + bytes, &ExecutableNear, &GuestCodeAddress);
+    if (bytes != 0) kyty_selfmark_init(base + bytes, &ExecutableNear, &ExecutableFixed, &GuestCodeAddress);
 #endif
 }
 

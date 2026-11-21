@@ -39,7 +39,26 @@ enum {
 	KYTY_SELFMARK_REFUSAL_CODE_PROTECTION = 13,
 	KYTY_SELFMARK_REFUSAL_TABLE_FULL      = 14,
 	KYTY_SELFMARK_REFUSAL_NO_CORE_SYNC    = 15,
-	KYTY_SELFMARK_REFUSALS                = 16
+	KYTY_SELFMARK_REFUSAL_NO_WINDOW       = 16,
+	KYTY_SELFMARK_REFUSAL_FROZEN          = 17,
+	KYTY_SELFMARK_REFUSALS                = 18
+};
+
+enum {
+	KYTY_SELFMARK_NOTE_SERVED           = 0,
+	KYTY_SELFMARK_NOTE_PATCHED_UNARMED  = 1,
+	KYTY_SELFMARK_NOTE_GUEST_SHORT      = 2,
+	KYTY_SELFMARK_NOTE_GUEST_NOT_STORE  = 3,
+	KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW  = 4,
+	KYTY_SELFMARK_NOTE_GUEST_FROZEN     = 5,
+	KYTY_SELFMARK_NOTE_GUEST_OTHER      = 6,
+	KYTY_SELFMARK_NOTE_GUEST_BUSY       = 7,
+	KYTY_SELFMARK_NOTE_HOST_AGC         = 8,
+	KYTY_SELFMARK_NOTE_HOST_OTHER       = 9,
+	KYTY_SELFMARK_NOTE_UNTRACKED        = 10,
+	KYTY_SELFMARK_NOTE_FAULT_KINDS      = 11,
+	KYTY_SELFMARK_NOTE_GIVEN_BACK       = 16,
+	KYTY_SELFMARK_NOTES                 = 32
 };
 
 typedef struct KytySelfMarkFault {
@@ -54,19 +73,30 @@ typedef struct KytySelfMarkStats {
 	uint64_t busy;
 	uint64_t slow_faults;
 	uint64_t breaks;
+	uint64_t punned;
+	uint64_t ahead;
+	uint64_t short_off;
+	uint64_t hop_regions;
 	uint64_t refusals[KYTY_SELFMARK_REFUSALS];
+	uint64_t notes[KYTY_SELFMARK_NOTES];
 } KytySelfMarkStats;
 
 typedef uint64_t (*KytySelfMarkNearAllocator)(uint64_t site, uint64_t bytes);
+typedef uint64_t (*KytySelfMarkFixedAllocator)(uint64_t address, uint64_t* bytes);
 typedef bool (*KytySelfMarkGuestCode)(uint64_t address);
 
-bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAllocator allocator, KytySelfMarkGuestCode guest);
+bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAllocator allocator, KytySelfMarkFixedAllocator fixed,
+                                     KytySelfMarkGuestCode guest);
 bool              kyty_selfmark_enabled(void);
 KytySelfMarkFault kyty_selfmark_write_fault(uint64_t address);
 KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);
 uint64_t          kyty_selfmark_target(uint64_t entry, const uint64_t* registers);
 uint64_t          kyty_selfmark_site(uint64_t entry);
 void              kyty_selfmark_service(void);
+void              kyty_selfmark_set_short(bool on);
+bool              kyty_selfmark_short(void);
+void              kyty_selfmark_note(uint32_t kind);
+uint32_t          kyty_selfmark_length(uint64_t entry);
 uint64_t          kyty_selfmark_breakpoint(uint64_t address);
 bool              kyty_selfmark_table_fault(uint64_t address);
 bool              kyty_selfmark_arm(uint64_t address, int64_t delta);

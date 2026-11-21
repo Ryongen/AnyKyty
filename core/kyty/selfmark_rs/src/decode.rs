@@ -19,9 +19,11 @@ pub enum Refusal {
     CodeProtection = 13,
     TableFull = 14,
     NoCoreSync = 15,
+    NoWindow = 16,
+    Frozen = 17,
 }
 
-pub const REFUSAL_COUNT: usize = 16;
+pub const REFUSAL_COUNT: usize = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
@@ -65,6 +67,12 @@ pub struct Store {
     pub plain: Plain,
     pub ext_x: bool,
     pub ext_b: bool,
+}
+
+impl Store {
+    pub fn short(&self) -> bool {
+        (self.len as usize) < PATCH_LEN
+    }
 }
 
 struct Reader {
@@ -307,9 +315,6 @@ pub unsafe fn decode_at(code: *const u8) -> Result<Store, Refusal> {
         return Err(Refusal::StackOperand);
     }
     let len = reader.read as u8;
-    if (len as usize) < PATCH_LEN {
-        return Err(Refusal::Short);
-    }
     Ok(Store {
         len,
         form,
@@ -392,11 +397,27 @@ mod tests {
     }
 
     #[test]
-    fn short_sites_keep_the_fault() {
-        assert_eq!(no(&[0xC5, 0xF9, 0xE7, 0x07]), Refusal::Short);
-        assert_eq!(no(&[0x48, 0x89, 0x17]), Refusal::Short);
-        assert_eq!(no(&[0x88, 0x0A]), Refusal::Short);
-        assert_eq!(no(&[0x42, 0x89, 0x14, 0x33]), Refusal::Short);
+    fn short_stores_are_decoded() {
+        let cases: &[(&[u8], u8, u16, u8)] = &[
+            (&[0xC5, 0xF9, 0xE7, 0x07], 4, 16, 7),
+            (&[0x48, 0x89, 0x17], 3, 8, 7),
+            (&[0x88, 0x0A], 2, 1, 2),
+            (&[0x42, 0x89, 0x14, 0x33], 4, 4, 3),
+            (&[0x89, 0x45, 0x00], 3, 4, 5),
+            (&[0xC6, 0x00, 0x7F], 3, 1, 0),
+            (&[0x66, 0x89, 0x01], 3, 2, 1),
+            (&[0x0F, 0x11, 0x07], 3, 16, 7),
+            (&[0x41, 0x88, 0x04, 0x24], 4, 1, 12),
+        ];
+        for (bytes, len, width, base) in cases {
+            let store = ok(bytes);
+            assert_eq!((store.len, store.width, store.base), (*len, *width, *base), "{bytes:02x?}");
+            assert!(store.short(), "{bytes:02x?}");
+        }
+        assert!(!ok(&[0xC5, 0xF9, 0xE7, 0x4F, 0x10]).short());
+        assert_eq!(no(&[0x89, 0x04, 0x24]), Refusal::StackBase);
+        assert_eq!(no(&[0x89, 0x05]), Refusal::RipRelative);
+        assert_eq!(no(&[0x01, 0x07]), Refusal::NotStore);
     }
 
     #[test]

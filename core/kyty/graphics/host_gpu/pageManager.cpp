@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/logging/log.h"
+#include "common/runtimeSwitches.h"
 #include "common/timer.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/hotWriteWatch.h"
@@ -523,23 +524,44 @@ struct PageManager::Impl {
 		const auto slow    = stats.slow_faults - mark_slow_seen.exchange(stats.slow_faults, std::memory_order_relaxed);
 		const auto patched = stats.patched - mark_patched_seen.exchange(stats.patched, std::memory_order_relaxed);
 		const auto refusal = refused - mark_refusals_seen.exchange(refused, std::memory_order_relaxed);
-		char       line[1024];
+		std::array<uint64_t, KYTY_SELFMARK_NOTES> notes {};
+		for (size_t kind = 0; kind < notes.size(); kind++) {
+			notes[kind] = stats.notes[kind] - mark_notes_seen[kind].exchange(stats.notes[kind], std::memory_order_relaxed);
+		}
+		const auto listed  = stats.refusals[KYTY_SELFMARK_REFUSAL_SHORT] + stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_STORE] +
+		                     stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE] + stats.refusals[KYTY_SELFMARK_REFUSAL_NO_WINDOW] +
+		                     stats.refusals[KYTY_SELFMARK_REFUSAL_FROZEN];
+		const auto back    = [&](uint32_t kind) { return notes[KYTY_SELFMARK_NOTE_GIVEN_BACK + kind]; };
+		char       line[2048];
 		std::snprintf(line, sizeof(line),
-		              "[kyty-selfmark] summary of the last %.0f s: %" PRIu64 " write sites patched (%" PRIu64 " in all), %" PRIu64
-		              " refused (in all: %" PRIu64 " shorter than 5 bytes, %" PRIu64 " not a plain store, %" PRIu64
-		              " outside guest code, %" PRIu64 " other); %" PRIu64 " pages marked by their writers now in %" PRIu32
+		              "[kyty-selfmark] summary of the last %.0f s: %" PRIu64 " write sites patched (%" PRIu64 " in all, %" PRIu64
+		              " shorter than a jump, %" PRIu64 " ahead of their first fault, %" PRIu64 " relay regions), short sites %s, %" PRIu64
+		              " refused (in all: %" PRIu64 " not a plain store, %" PRIu64 " outside guest code, %" PRIu64 " without a jump window, %" PRIu64
+		              " borrowed by a jump, %" PRIu64 " other); %" PRIu64 " pages marked by their writers now in %" PRIu32
 		              " regions, %" PRIu64 " promoted, %" PRIu64 " given back to faults after an unpatched write, %" PRIu64
 		              " released; %" PRIu64 " page writes collected from cards in %" PRIu64 " collections (%.3f s) and %" PRIu64
 		              " before GPU writes; %" PRIu64 " faults of patched sites on pages not marked yet, %" PRIu64
-		              " site patches met by a running thread\n",
-		              static_cast<double>(now_ns - last) / 1e9, patched, stats.patched, refusal,
-		              stats.refusals[KYTY_SELFMARK_REFUSAL_SHORT], stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_STORE],
-		              stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE],
-		              refused - stats.refusals[KYTY_SELFMARK_REFUSAL_SHORT] - stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_STORE] -
-		                  stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE],
+		              " site patches met by a running thread; write faults by writer: %" PRIu64 " served by marking, %" PRIu64
+		              " patched site on a page that cannot be marked, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64
+		              " no jump window, %" PRIu64 " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64
+		              " libSceAgc, %" PRIu64 " other host code, %" PRIu64 " page not watched; blocks given back by writer: %" PRIu64
+		              " patched site, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64 " no jump window, %" PRIu64
+		              " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64 " libSceAgc, %" PRIu64
+		              " other host code\n",
+		              static_cast<double>(now_ns - last) / 1e9, patched, stats.patched, stats.punned, stats.ahead, stats.hop_regions,
+		              mark_short.load(std::memory_order_relaxed) ? "on" : "off", refusal, stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_STORE],
+		              stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE], stats.refusals[KYTY_SELFMARK_REFUSAL_NO_WINDOW],
+		              stats.refusals[KYTY_SELFMARK_REFUSAL_FROZEN], refused - listed + stats.refusals[KYTY_SELFMARK_REFUSAL_SHORT],
 		              marked_pages.load(std::memory_order_relaxed), marked_region_count.load(std::memory_order_relaxed),
 		              take(mark_promoted), take(mark_refused), take(mark_forgotten), take(mark_collected), take(mark_scans),
-		              static_cast<double>(take(mark_scan_ns)) / 1e9, take(mark_scoped_scans), slow, stats.breaks);
+		              static_cast<double>(take(mark_scan_ns)) / 1e9, take(mark_scoped_scans), slow, stats.breaks,
+		              notes[KYTY_SELFMARK_NOTE_SERVED], notes[KYTY_SELFMARK_NOTE_PATCHED_UNARMED], notes[KYTY_SELFMARK_NOTE_GUEST_SHORT],
+		              notes[KYTY_SELFMARK_NOTE_GUEST_NOT_STORE], notes[KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW],
+		              notes[KYTY_SELFMARK_NOTE_GUEST_FROZEN], notes[KYTY_SELFMARK_NOTE_GUEST_OTHER], notes[KYTY_SELFMARK_NOTE_GUEST_BUSY],
+		              notes[KYTY_SELFMARK_NOTE_HOST_AGC], notes[KYTY_SELFMARK_NOTE_HOST_OTHER], notes[KYTY_SELFMARK_NOTE_UNTRACKED],
+		              back(KYTY_SELFMARK_NOTE_PATCHED_UNARMED), back(KYTY_SELFMARK_NOTE_GUEST_SHORT), back(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE),
+		              back(KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW), back(KYTY_SELFMARK_NOTE_GUEST_FROZEN), back(KYTY_SELFMARK_NOTE_GUEST_OTHER),
+		              back(KYTY_SELFMARK_NOTE_GUEST_BUSY), back(KYTY_SELFMARK_NOTE_HOST_AGC), back(KYTY_SELFMARK_NOTE_HOST_OTHER));
 		Log::WriteToConsoleAndLog(line);
 #endif
 	}
@@ -663,6 +685,8 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    mark_slow_seen {0};
 	std::atomic<uint64_t>                    mark_patched_seen {0};
 	std::atomic<uint64_t>                    mark_refusals_seen {0};
+	std::atomic<bool>                        mark_short {true};
+	std::array<std::atomic<uint64_t>, 32>    mark_notes_seen {};
 
 	std::mutex                                  hot_mutex;
 	std::map<uint64_t, uint32_t>                hot_pages;
@@ -1035,6 +1059,15 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave) 
 	}
 }
 
+void PageManager::ForgetAllWritten() {
+	auto&      impl  = *m_impl;
+	const auto count = impl.marked_region_count.load(std::memory_order_acquire);
+	for (uint32_t slot = 0; slot < count; slot++) {
+		const auto base = uint64_t {impl.marked_regions[slot].load(std::memory_order_relaxed)} * REGION_SIZE;
+		UnmarkWritten(base, REGION_SIZE, MarkLeave::Forget);
+	}
+}
+
 bool PageManager::HasMarkedPages() const noexcept {
 	return m_impl->marked_region_count.load(std::memory_order_acquire) != 0;
 }
@@ -1045,6 +1078,11 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 	uint64_t   now    = 0;
 	if (!scoped) {
 #if defined(KYTY_SELF_MARKING)
+		const bool on = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingShort);
+		if (impl.mark_short.exchange(on, std::memory_order_acq_rel) != on) {
+			kyty_selfmark_set_short(on);
+			ForgetAllWritten();
+		}
 		kyty_selfmark_service();
 #endif
 		now = Common::SteadyNs();

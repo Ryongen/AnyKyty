@@ -3,6 +3,7 @@ use crate::decode::{Form, Plain, Refusal, Store};
 pub const SLOT: usize = 384;
 pub const SITE_AT: usize = 368;
 pub const SLOW_AT: usize = 376;
+pub const PATCHED_AT: usize = 380;
 const CODE_ROOM: usize = SITE_AT;
 pub const LEAST_DELTA: u32 = 0x1000;
 
@@ -290,15 +291,4 @@ pub fn build(store: &Store, original: &[u8], site: u64, at: u64, tables: &Tables
     let word = slow_at as u64 | (length as u64) << 16 | (store.width as u64) << 24;
     code.bytes[SLOW_AT..SLOW_AT + 8].copy_from_slice(&word.to_le_bytes());
     Ok(Built { bytes: code.bytes, slow_at })
-}
-
-pub fn jump(site: u64, target: u64) -> Result<[u8; 16], Refusal> {
-    let distance = target.wrapping_sub(site.wrapping_add(5)) as i64;
-    if distance != distance as i32 as i64 {
-        return Err(Refusal::OutOfReach);
-    }
-    let mut bytes = [0xCCu8; 16];
-    bytes[0] = 0xE9;
-    bytes[1..5].copy_from_slice(&(distance as i32).to_le_bytes());
-    Ok(bytes)
 }

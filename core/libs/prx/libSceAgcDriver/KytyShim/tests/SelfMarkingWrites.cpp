@@ -37,7 +37,8 @@ constexpr uint64_t Slot         = 0x40;
 constexpr int64_t  Displacement = 0x100;
 
 constexpr std::array<uint8_t, 8> LongStore {0x48, 0x89, 0xB7, 0x00, 0x01, 0x00, 0x00, 0xC3};
-constexpr std::array<uint8_t, 4> ShortStore {0x48, 0x89, 0x37, 0xC3};
+constexpr std::array<uint8_t, 8> ShortStore {0x48, 0x89, 0x37, 0xC3, 0x2E, 0x2E, 0x2E, 0x2E};
+constexpr std::array<uint8_t, 4> Exchange {0x48, 0x87, 0x37, 0xC3};
 
 using Store = void (*)(uint64_t pointer, uint64_t value);
 
@@ -64,6 +65,14 @@ uint64_t Read(uint64_t address) {
 void WriteOnThread(Store store, uint64_t pointer, uint64_t value) {
 	std::thread writer([&] { store(pointer, value); });
 	writer.join();
+}
+
+bool HoldsJump(Store store, uint32_t pads) {
+	const auto* code = reinterpret_cast<const volatile uint8_t*>(store);
+	for (uint32_t pad = 0; pad < pads; pad++) {
+		if (code[pad] != 0x2E) return false;
+	}
+	return code[pads] == 0xE9;
 }
 
 struct Fixture {
@@ -106,7 +115,7 @@ const char* CheckFirstFaultsCorrectTheSite(Fixture& fixture, Store store, uint64
 	const auto before = g_faults.load();
 	WriteOnThread(store, target - Displacement, 0x2222);
 	if (g_faults.load() != before + 1) return "the write that corrects its site did not take exactly one fault";
-	if (*reinterpret_cast<const volatile uint8_t*>(store) != 0xE9) return "the write site was not replaced by a jump";
+	if (!HoldsJump(store, 2)) return "the write site was not replaced by a padded jump";
 	if (Read(target) != 0x2222) return "the corrected write did not reach guest memory";
 	if (kyty_selfmark_armed(page) == 0) return "the page was not armed for self-marking writes";
 	if (!kyty_selfmark_any(page, page + Page)) return "the corrected write left no card";
@@ -140,13 +149,53 @@ const char* CheckCorrectedWritesTakeNoFault(Fixture& fixture, Store store, uint6
 	return nullptr;
 }
 
+const char* CheckShortSiteIsCorrected(Fixture& fixture, Store store, Store brief, uint64_t block) {
+	const auto page   = block + Page;
+	const auto target = page + Slot;
+	fixture.Clean(block);
+	WriteOnThread(brief, target, 0x7001);
+	if (Read(target) != 0x7001) return "the first write of a short site did not reach guest memory";
+	fixture.renderer.CollectHotPageWrites();
+	fixture.Clean(block);
+	if (fixture.buffers.IsRegionCpuDirty(block, Block)) return "the upload after the first short write did not leave the pages clean";
+	if (!HoldsJump(brief, 0)) return "the short write site was not replaced by a jump";
+	if (std::memcmp(reinterpret_cast<const void*>(reinterpret_cast<uint64_t>(brief) + 3), ShortStore.data() + 3, ShortStore.size() - 3) != 0) {
+		return "the bytes that follow the short write site were modified";
+	}
+
+	auto before = g_faults.load();
+	WriteOnThread(brief, target, 0x7002);
+	if (g_faults.load() != before + 1) return "the first write of a corrected short site did not take exactly one fault";
+	if (Read(target) != 0x7002) return "the corrected short write did not reach guest memory";
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the page was not armed by the short site";
+	if (!kyty_selfmark_any(page, page + Page)) return "the corrected short write left no card";
+	if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the short write was reported before the synchronisation point";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the synchronisation point did not report the short write";
+	if (!fixture.GpuHolds(target, 0x7002)) return "the GPU buffer does not hold the corrected short write";
+
+	for (uint64_t round = 0; round < 8; round++) {
+		const auto value = 0x7100 + round;
+		before           = g_faults.load();
+		WriteOnThread(brief, target, value);
+		WriteOnThread(store, target + 8 - Displacement, value + 0x100);
+		if (g_faults.load() != before) return "a short and a long corrected site took a fault on the page they share";
+		if (Read(target) != value || Read(target + 8) != value + 0x100) return "the writes of the two sites did not reach guest memory";
+		if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the page shared by a short and a long site was given back to faults";
+		fixture.renderer.CollectHotPageWrites(page, Page);
+		if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "a collection of the shared page did not report the writes";
+		if (!fixture.GpuHolds(target, value) || !fixture.GpuHolds(target + 8, value + 0x100)) return "the GPU buffer does not hold the writes of the two sites";
+	}
+	return nullptr;
+}
+
 const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store unpatched, uint64_t block) {
 	const auto page   = block + Page;
 	const auto target = page + Slot;
 	auto       before = g_faults.load();
 	WriteOnThread(unpatched, target + 8, 0x4444);
 	if (g_faults.load() != before + 1) return "a write site that cannot be corrected did not fault once";
-	if (*reinterpret_cast<const volatile uint8_t*>(unpatched) != ShortStore[0]) return "a short write site was modified";
+	if (*reinterpret_cast<const volatile uint8_t*>(unpatched) != Exchange[0]) return "a write site that cannot be corrected was modified";
 	if (Read(target + 8) != 0x4444) return "the write of an uncorrected site did not reach guest memory";
 	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page was not given back to faults after a write that cannot mark it";
 	if (kyty_selfmark_armed(page + 2 * Page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block of a page given back to faults was left marked";
@@ -168,6 +217,44 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of a corrected site on a page given back to faults did not report it at once";
 	if (kyty_selfmark_any(page, page + Page)) return "a write to a page given back to faults left a card";
 	if (!fixture.GpuHolds(target, 0x6666)) return "the GPU buffer does not hold the write to a page given back to faults";
+	return nullptr;
+}
+
+const char* CheckSwitchedOffShortSites(Fixture& fixture, Store store, Store brief, uint64_t block) {
+	const auto page   = block + Page;
+	const auto target = page + Slot;
+	fixture.renderer.CollectHotPageWrites();
+	fixture.Clean(block);
+	kyty_selfmark_set_short(false);
+	fixture.renderer.ForgetAllWritten();
+	if (std::memcmp(reinterpret_cast<const void*>(brief), ShortStore.data(), ShortStore.size()) != 0) return "the short site did not get its bytes back";
+	if (kyty_selfmark_armed(page) != 0) return "a page stayed marked after the switch was turned";
+	WriteOnThread(store, target + 8 - Displacement, 0x8001);
+	fixture.renderer.CollectHotPageWrites();
+	fixture.Clean(block);
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the long site did not mark the page again";
+	auto before = g_faults.load();
+	WriteOnThread(brief, target, 0x8002);
+	if (g_faults.load() != before + 1) return "a short site did not fault while short sites are switched off";
+	if (Read(target) != 0x8002) return "the write of a switched off short site did not reach guest memory";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block was not given back to faults by a switched off short site";
+	if (!fixture.GpuHolds(target, 0x8002)) return "the GPU buffer does not hold the write of a switched off short site";
+
+	kyty_selfmark_set_short(true);
+	fixture.renderer.ForgetAllWritten();
+	if (!HoldsJump(brief, 0)) return "the short site did not get its jump back";
+	if (kyty_selfmark_armed(page) != 0) return "the refusal of the block survived the switch";
+	fixture.renderer.CollectHotPageWrites();
+	fixture.Clean(block);
+	before = g_faults.load();
+	WriteOnThread(brief, target, 0x8003);
+	if (g_faults.load() != before + 1) return "a short site switched back on did not take one fault to mark its page";
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "a short site switched back on did not mark its page";
+	before = g_faults.load();
+	WriteOnThread(brief, target, 0x8004);
+	if (g_faults.load() != before) return "a short site switched back on took a second fault";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.GpuHolds(target, 0x8004)) return "the GPU buffer does not hold the write of a short site switched back on";
 	return nullptr;
 }
 
@@ -214,7 +301,7 @@ int Report(const char* failure) {
 	return 1;
 }
 
-int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store store, Store unpatched) {
+int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store store, Store brief, Store unpatched) {
 	RenderContext    renderer(graphics);
 	CommandProcessor producer(renderer, 0);
 	producer.Reset();
@@ -234,6 +321,8 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 	int        failures = Report(CheckFirstFaultsCorrectTheSite(fixture, store, first));
 	if (failures == 0) failures += Report(CheckCorrectedWritesTakeNoFault(fixture, store, first));
 	if (failures == 0) failures += Report(CheckUnpatchedSiteKeepsTheFault(fixture, store, unpatched, first));
+	if (failures == 0) failures += Report(CheckShortSiteIsCorrected(fixture, store, brief, BlockAt(address, 2)));
+	if (failures == 0) failures += Report(CheckSwitchedOffShortSites(fixture, store, brief, BlockAt(address, 3)));
 	if (failures == 0) failures += Report(CheckWritersAndCollector(fixture, store, BlockAt(address, 1)));
 
 	sigaction(SIGSEGV, &g_previous, nullptr);
@@ -278,12 +367,14 @@ extern "C" int RunKytySelfMarkingWritesTest() {
 	}
 	std::memcpy(code, LongStore.data(), LongStore.size());
 	std::memcpy(code + 0x100, ShortStore.data(), ShortStore.size());
+	std::memcpy(code + 0x200, Exchange.data(), Exchange.size());
 	if (::mprotect(code, CodeBytes, PROT_READ | PROT_EXEC) != 0) {
 		std::fputs("kyty_shim_self_marking_writes: FAILED: could not protect guest code\n", stderr);
 		return 1;
 	}
 	const auto address  = reinterpret_cast<uint64_t>(guest);
-	const auto failures = CheckSelfMarkingWrites(gpu.graphics, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100));
+	const auto failures = CheckSelfMarkingWrites(gpu.graphics, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100),
+	                                             reinterpret_cast<Store>(code + 0x200));
 	if (sceKernelMunmap(address, Mapped) != 0) {
 		std::fputs("kyty_shim_self_marking_writes: FAILED: could not unmap guest backing\n", stderr);
 		return 1;

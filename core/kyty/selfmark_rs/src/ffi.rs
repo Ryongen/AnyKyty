@@ -1,6 +1,6 @@
 use crate::cards;
 use crate::decode::REFUSAL_COUNT;
-use crate::sites::{self, GuestCode, NearAllocator};
+use crate::sites::{self, FixedAllocator, GuestCode, NearAllocator, NOTES};
 use core::sync::atomic::Ordering;
 
 #[repr(C)]
@@ -17,15 +17,20 @@ pub struct KytySelfMarkStats {
     pub busy: u64,
     pub slow_faults: u64,
     pub breaks: u64,
+    pub punned: u64,
+    pub ahead: u64,
+    pub short_off: u64,
+    pub hop_regions: u64,
     pub refusals: [u64; REFUSAL_COUNT],
+    pub notes: [u64; NOTES],
 }
 
 #[no_mangle]
-pub extern "C" fn kyty_selfmark_init(guest_limit: u64, allocator: Option<NearAllocator>, guest: Option<GuestCode>) -> bool {
+pub extern "C" fn kyty_selfmark_init(guest_limit: u64, allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>, guest: Option<GuestCode>) -> bool {
     if !cards::init(guest_limit) {
         return false;
     }
-    sites::configure(allocator, guest);
+    sites::configure(allocator, fixed, guest);
     sites::set_enabled(true);
     true
 }
@@ -66,8 +71,28 @@ pub extern "C" fn kyty_selfmark_site(entry: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn kyty_selfmark_service() {
+pub unsafe extern "C" fn kyty_selfmark_service() {
     sites::service()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kyty_selfmark_set_short(on: bool) {
+    sites::set_short(on)
+}
+
+#[no_mangle]
+pub extern "C" fn kyty_selfmark_short() -> bool {
+    sites::short_on()
+}
+
+#[no_mangle]
+pub extern "C" fn kyty_selfmark_note(kind: u32) {
+    sites::note(kind as usize)
+}
+
+#[no_mangle]
+pub extern "C" fn kyty_selfmark_length(entry: u64) -> u32 {
+    sites::length_of(entry)
 }
 
 #[no_mangle]
@@ -112,6 +137,13 @@ pub unsafe extern "C" fn kyty_selfmark_stats(stats: *mut KytySelfMarkStats) {
     stats.busy = sites::BUSY.load(Ordering::Relaxed);
     stats.slow_faults = sites::SLOW_FAULTS.load(Ordering::Relaxed);
     stats.breaks = sites::BREAKS.load(Ordering::Relaxed);
+    stats.punned = sites::PUNNED.load(Ordering::Relaxed);
+    stats.ahead = sites::AHEAD.load(Ordering::Relaxed);
+    stats.short_off = sites::SHORT_OFF.load(Ordering::Relaxed);
+    stats.hop_regions = sites::hop_regions();
+    for (slot, counter) in stats.notes.iter_mut().zip(sites::NOTED.iter()) {
+        *slot = counter.load(Ordering::Relaxed);
+    }
     for (slot, counter) in stats.refusals.iter_mut().zip(sites::REFUSALS.iter()) {
         *slot = counter.load(Ordering::Relaxed);
     }
