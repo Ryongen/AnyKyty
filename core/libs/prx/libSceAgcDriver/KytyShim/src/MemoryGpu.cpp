@@ -334,8 +334,6 @@ bool PromoteForCommandWrite(uint64_t page) noexcept {
 	thread_local uint64_t tried   = UINT64_MAX;
 	thread_local uint32_t refused = 0;
 	if (page == tried && ++refused < PromoteRetry) return false;
-	tried   = page;
-	refused = 0;
 #ifndef _WIN32
 	GuestDeliveryHold_nid_no_patch();
 #endif
@@ -343,6 +341,8 @@ bool PromoteForCommandWrite(uint64_t page) noexcept {
 #ifndef _WIN32
 	GuestDeliveryRelease_nid_no_patch();
 #endif
+	tried   = marked ? UINT64_MAX : page;
+	refused = 0;
 	return marked;
 }
 

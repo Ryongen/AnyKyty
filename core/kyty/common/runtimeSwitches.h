@@ -16,6 +16,7 @@ enum class Switch : uint32_t {
 	SelfMarkingWrites,
 	AgcSelfMark,
 	SelfMarkingRmw,
+	SelfMarkingAging,
 	Count
 };
 

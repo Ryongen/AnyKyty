@@ -313,6 +313,20 @@ const char* CheckCommandWritesMarkTheirPages(Fixture& fixture, const KytySelfMar
 		if (!fixture.GpuHolds(across, expected)) return "the GPU buffer does not hold the packet across two pages and its patch";
 	}
 
+	for (uint32_t collection = 0; collection < 10000; collection++) {
+		fixture.renderer.CollectHotPageWrites();
+	}
+	if (kyty_selfmark_armed(page) != 0) return "a card line silent for many collections was not given back to faults";
+	if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "giving a silent card line back to faults reported its pages written";
+	buffer.cursor_up = words;
+	before           = g_faults.load();
+	if (agc.nop(&buffer, 4) != words) return "libSceAgc did not write its packet at the cursor of a silent line given back";
+	if (g_faults.load() != before) return "libSceAgc took a fault on a page whose silent card line was given back";
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "libSceAgc did not mark again a page whose silent card line was given back";
+	if (!kyty_selfmark_any(page, page + Page)) return "libSceAgc left no card on a page marked again";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.GpuHolds(page + Slot, nop_words)) return "the GPU buffer does not hold the packet written to a page marked again";
+
 	fixture.renderer.UnmarkWritten(block, Block, PageManager::MarkLeave::Refuse, static_cast<uint8_t>(KYTY_SELFMARK_NOTE_HOST_OTHER + 1));
 	fixture.renderer.CollectHotPageWrites();
 	fixture.Clean(block);

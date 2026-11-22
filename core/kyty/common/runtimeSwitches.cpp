@@ -28,6 +28,7 @@ constexpr Entry Entries[] = {
     {"KYTY_SELF_MARKING_WRITES", "0", "1"},
     {"KYTY_AGC_SELF_MARK", "0", "1"},
     {"KYTY_SELF_MARKING_RMW", "0", "1"},
+    {"KYTY_SELF_MARKING_AGING", "0", "1"},
 };
 
 static_assert(std::size(Entries) == SwitchCount);
@@ -40,7 +41,7 @@ bool Initial(size_t index) {
 }
 
 namespace Detail {
-constinit std::atomic<bool> g_on[SwitchCount] {true, true, true, true};
+constinit std::atomic<bool> g_on[SwitchCount] {true, true, true, true, true};
 }
 
 namespace {

@@ -74,6 +74,8 @@ constexpr size_t   MARK_BLOCK_PAGES   = 16;
 constexpr size_t   MARK_LINE_PAGES    = 64;
 constexpr size_t   MARK_LINES         = REGION_PAGES / MARK_LINE_PAGES;
 constexpr uint64_t MARK_SWEEP_NS      = 20'000'000;
+constexpr uint32_t MARK_AGE_SCANS     = 8192;
+constexpr uint32_t MARK_AGE_PASS      = 1024;
 constexpr int64_t  MARK_REFUSED       = 1;
 constexpr int64_t  MARK_REFUSALS      = 32;
 static_assert(MARK_LINES == 16);
@@ -435,6 +437,7 @@ struct PageManager::Impl {
 		}
 		state.hot       = HOT_MARKED;
 		const auto line = page_index / MARK_LINE_PAGES;
+		marked_line_seen[size_t {region.marked_slot} * MARK_LINES + line].store(mark_scan_clock.load(std::memory_order_relaxed), std::memory_order_relaxed);
 		if (region.marked_lines[line]++ == 0) {
 			marked_masks[region.marked_slot].fetch_or(static_cast<uint16_t>(1u << line), std::memory_order_release);
 		}
@@ -491,6 +494,39 @@ struct PageManager::Impl {
 			}
 		}
 		flush();
+	}
+
+	void SeeLines(uint32_t slot, uint64_t region_base, uint64_t begin, uint64_t end, uint32_t clock) noexcept {
+		for (auto line = (begin - region_base) / PAGE_SIZE / MARK_LINE_PAGES; line <= (end - 1 - region_base) / PAGE_SIZE / MARK_LINE_PAGES && line < MARK_LINES; line++) {
+			marked_line_seen[size_t {slot} * MARK_LINES + line].store(clock, std::memory_order_relaxed);
+		}
+	}
+
+	void AgeLines(uint32_t clock) noexcept {
+		const auto count = marked_region_count.load(std::memory_order_acquire);
+		for (uint32_t slot = 0; slot < count; slot++) {
+			uint32_t idle = 0;
+			for (uint32_t mask = marked_masks[slot].load(std::memory_order_acquire); mask != 0; mask &= mask - 1u) {
+				const auto line = static_cast<uint32_t>(std::countr_zero(mask));
+				if (clock - marked_line_seen[size_t {slot} * MARK_LINES + line].load(std::memory_order_relaxed) > MARK_AGE_SCANS) {
+					idle |= 1u << line;
+				}
+			}
+			if (idle == 0) {
+				continue;
+			}
+			const auto base   = uint64_t {marked_regions[slot].load(std::memory_order_relaxed)} * REGION_SIZE;
+			auto*      region = FindRegion(base);
+			if (region == nullptr) {
+				continue;
+			}
+			SpinGuard lock(region->lock);
+			for (uint32_t lines = idle; lines != 0; lines &= lines - 1u) {
+				const auto line = static_cast<size_t>(std::countr_zero(lines));
+				LeaveMarked(*region, base, line * MARK_LINE_PAGES, (line + 1) * MARK_LINE_PAGES, MarkLeave::Release, 0);
+			}
+			mark_aged.fetch_add(static_cast<uint64_t>(std::popcount(idle)), std::memory_order_relaxed);
+		}
 	}
 
 	[[nodiscard]] bool LineWritten(uint64_t line_begin) noexcept {
@@ -616,8 +652,10 @@ struct PageManager::Impl {
 		std::array<uint64_t, 256> site_counts {};
 		const auto sites = kyty_selfmark_sites(site_keys.data(), site_counts.data(), site_keys.size());
 		std::array<char, 16384> sites_line {};
-		used = static_cast<size_t>(std::snprintf(sites_line.data(), sites_line.size(), "[kyty-selfmark-collect] global collections since the start: %" PRIu64 " found no card; by caller:",
-		                                         collect_empty.load(std::memory_order_relaxed)));
+		used = static_cast<size_t>(std::snprintf(sites_line.data(), sites_line.size(),
+		                                         "[kyty-selfmark-collect] since the start: %" PRIu64 " card lines given back to faults after %" PRIu32
+		                                         " global collections without a card; global collections: %" PRIu64 " found no card; by caller:",
+		                                         mark_aged.load(std::memory_order_relaxed), MARK_AGE_SCANS, collect_empty.load(std::memory_order_relaxed)));
 		for (size_t slot = 0; slot < collect_callers.size() && used + 160 < sites_line.size(); slot++) {
 			const auto caller = collect_callers[slot].load(std::memory_order_relaxed);
 			if (caller == 0) {
@@ -772,6 +810,9 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    marked_pages {0};
 	std::atomic<bool>                        mark_on {true};
 	std::atomic<uint8_t>                     mark_arm {0};
+	std::unique_ptr<std::atomic<uint32_t>[]> marked_line_seen = std::make_unique<std::atomic<uint32_t>[]>(size_t {MARKED_REGION_CAP} * MARK_LINES);
+	std::atomic<uint32_t>                    mark_scan_clock {0};
+	std::atomic<uint64_t>                    mark_aged {0};
 	std::array<std::atomic<uintptr_t>, 32>   collect_callers {};
 	std::array<std::atomic<uint64_t>, 32>    collect_caller_counts {};
 	std::atomic<uint64_t>                    collect_empty {0};
@@ -1165,7 +1206,8 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, 
 uint8_t PageManager::MarkArm() noexcept {
 	return static_cast<uint8_t>((Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites) ? 1u : 0u) |
 	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::AgcSelfMark) ? 2u : 0u) |
-	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingRmw) ? 4u : 0u));
+	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingRmw) ? 4u : 0u) |
+	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingAging) ? 8u : 0u));
 }
 
 void PageManager::NoteCollectCaller(uintptr_t caller) noexcept {
@@ -1231,9 +1273,15 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 		written(context, begin, end);
 	};
 	if (scoped) {
-		impl.TakeMarked(vaddr, vaddr + size, deliver);
+		impl.TakeMarked(vaddr, vaddr + size, [&](uint64_t begin, uint64_t end) {
+			if (auto* region = impl.FindRegion(begin); region != nullptr && region->marked.load(std::memory_order_acquire)) {
+				impl.SeeLines(region->marked_slot, Common::AlignDown(begin, REGION_SIZE), begin, end, impl.mark_scan_clock.load(std::memory_order_relaxed));
+			}
+			deliver(begin, end);
+		});
 		impl.mark_scoped_scans.fetch_add(1, std::memory_order_relaxed);
 	} else {
+		const auto clock      = impl.mark_scan_clock.fetch_add(1, std::memory_order_relaxed) + 1;
 		auto       last_sweep = impl.mark_last_sweep.load(std::memory_order_relaxed);
 		const bool sweep      = forced || (now - last_sweep >= MARK_SWEEP_NS &&
 		                                   impl.mark_last_sweep.compare_exchange_strong(last_sweep, now, std::memory_order_relaxed));
@@ -1241,15 +1289,23 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 			const auto base = uint64_t {impl.marked_regions[slot].load(std::memory_order_relaxed)} * REGION_SIZE;
 			if (sweep || (impl.marked_sweeps[slot].load(std::memory_order_relaxed) != 0 &&
 			              impl.marked_sweeps[slot].exchange(0, std::memory_order_acq_rel) != 0)) {
-				impl.TakeMarked(base, base + REGION_SIZE, deliver);
+				impl.TakeMarked(base, base + REGION_SIZE, [&](uint64_t begin, uint64_t end) {
+					impl.SeeLines(slot, base, begin, end, clock);
+					deliver(begin, end);
+				});
 				continue;
 			}
 			for (uint32_t mask = impl.marked_masks[slot].load(std::memory_order_acquire); mask != 0; mask &= mask - 1u) {
-				const auto begin = base + uint64_t {static_cast<uint32_t>(std::countr_zero(mask))} * MARK_LINE_PAGES * PAGE_SIZE;
+				const auto line  = static_cast<uint32_t>(std::countr_zero(mask));
+				const auto begin = base + uint64_t {line} * MARK_LINE_PAGES * PAGE_SIZE;
 				if (impl.LineWritten(begin)) {
+					impl.marked_line_seen[size_t {slot} * MARK_LINES + line].store(clock, std::memory_order_relaxed);
 					impl.TakeMarked(begin, begin + MARK_LINE_PAGES * PAGE_SIZE, deliver);
 				}
 			}
+		}
+		if ((clock % MARK_AGE_PASS) == 0 && (impl.mark_arm.load(std::memory_order_relaxed) & 8u) != 0) {
+			impl.AgeLines(clock);
 		}
 		const auto scans = impl.mark_scans.fetch_add(1, std::memory_order_relaxed);
 		if ((scans & 63u) == 0) {
