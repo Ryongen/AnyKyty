@@ -244,7 +244,7 @@ void RenderContext::PrepareGpuWrite(const void* destination, uint64_t size) noex
 	if (size == 0 || !GuestRange {vaddr, size}.Valid()) {
 		return;
 	}
-	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse);
+	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse, PageManager::MARK_CAUSE_PREPARED);
 	for (auto page = vaddr & ~(page_size - 1); page < vaddr + size; page += page_size) {
 		if (m_page_manager.IsWatched(page)) {
 			(void)HandleFault(PageFaultAccess::Write, std::max(page, vaddr));
@@ -272,7 +272,7 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	if (!IsMapped(vaddr, size)) {
 		return false;
 	}
-	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse);
+	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse, PageManager::MARK_CAUSE_PREPARED);
 	m_buffer_cache.InvalidateMemory(vaddr, size);
 	m_texture_cache.InvalidateMemory(vaddr, size);
 	m_image_heap.InvalidateMemory(vaddr, size);
@@ -285,7 +285,7 @@ bool RenderContext::InvalidateMemoryForWrite(uint64_t vaddr, uint64_t size) {
 	if (!IsMapped(vaddr, size)) {
 		return false;
 	}
-	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse);
+	m_page_manager.UnmarkWritten(vaddr, size, PageManager::MarkLeave::Refuse, PageManager::MARK_CAUSE_PREPARED);
 	m_buffer_cache.InvalidateMemoryForWrite(vaddr, size);
 	m_texture_cache.InvalidateMemory(vaddr, size);
 	m_image_heap.InvalidateMemory(vaddr, size);

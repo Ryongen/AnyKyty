@@ -43,9 +43,11 @@ public:
 	void CollectHotPageWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
 	void ForgetHotPages(uint64_t vaddr, uint64_t size);
 
-	enum class MarkLeave { Release, Refuse, Forget };
+	enum class MarkLeave { Release, Refuse, Forget, Open };
+	static constexpr uint8_t MARK_CAUSE_PREPARED = 12;
 	[[nodiscard]] bool MarkWritten(uint64_t vaddr);
-	void               UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave);
+	void               UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, uint8_t cause = 0);
+	[[nodiscard]] uint32_t MarkState(uint64_t vaddr);
 	void               ForgetAllWritten();
 	[[nodiscard]] bool HasMarkedPages() const noexcept;
 	void               CollectMarkedWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);

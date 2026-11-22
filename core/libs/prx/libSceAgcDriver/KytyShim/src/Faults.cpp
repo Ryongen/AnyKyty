@@ -364,7 +364,7 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
         kyty_selfmark_note(kind);
         if (PageArmed(page)) {
             kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK + kind);
-            Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED);
+            Memory::UnmarkWrittenPages(page, MarkPage, fault.outcome == KYTY_SELFMARK_REFUSED, static_cast<std::uint8_t>(kind + 1));
         }
         return write;
     }
@@ -375,7 +375,17 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
     write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
     const auto arm    = [](std::uint64_t at) { return kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at); };
     write.served      = arm(write.first) && (write.last == write.first || arm(write.last)) && MarkedFastPath(write.first, write.last);
-    kyty_selfmark_note(write.served ? KYTY_SELFMARK_NOTE_SERVED : KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
+    if (write.served) {
+        kyty_selfmark_note(KYTY_SELFMARK_NOTE_SERVED);
+    } else {
+        const auto state = Memory::MarkedPageState(page);
+        kyty_selfmark_note(KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
+        kyty_selfmark_note(KYTY_SELFMARK_NOTE_PAGE_STATE + (state & 0xFFu));
+        if ((state & 0xFFu) == KYTY_SELFMARK_PAGE_GIVEN_BACK) {
+            const auto by = state >> 8u;
+            kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK_BY + (by < KYTY_SELFMARK_NOTE_WRITERS ? by : 0u));
+        }
+    }
     return write;
 }
 
@@ -383,7 +393,7 @@ void FinishMarkedWrite(FaultContext& context, const MarkedWrite& write) {
     if (write.entry == 0) return;
     if (!write.served && !MarkedFastPath(write.first, write.last) && (PageArmed(write.first) || PageArmed(write.last))) {
         kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK + KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
-        Libs::LibKernel::Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true);
+        Libs::LibKernel::Memory::UnmarkWrittenPages(write.first, write.last + MarkPage - write.first, true, KYTY_SELFMARK_NOTE_PATCHED_UNARMED + 1);
     }
     if (write.resume) SetInstruction(context, write.entry);
 }

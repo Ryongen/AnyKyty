@@ -17,7 +17,7 @@ pub type FixedAllocator = unsafe extern "C" fn(address: u64, bytes: *mut u64) ->
 pub type GuestCode = unsafe extern "C" fn(address: u64) -> bool;
 
 pub const ARENA_BYTES: usize = 256 * 1024;
-pub const NOTES: usize = 32;
+pub const NOTES: usize = 64;
 const ARENA_SLOTS: usize = ARENA_BYTES / SLOT;
 const ARENA_WORDS: usize = ARENA_SLOTS.div_ceil(64);
 const ARENAS: usize = 64;

@@ -195,7 +195,8 @@ void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 [[nodiscard]] bool MarkWrittenPage(uint64_t vaddr) noexcept;
-void               UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse) noexcept;
+void               UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse, uint8_t cause = 0) noexcept;
+[[nodiscard]] uint32_t MarkedPageState(uint64_t vaddr) noexcept;
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);

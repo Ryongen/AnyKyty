@@ -64,6 +64,7 @@ constexpr size_t   HOT_IDLE_PER_SWEEP = 1024;
 constexpr uint64_t HOT_GRANULE_SIZE   = 2 * 1024 * 1024;
 constexpr uint64_t HOT_CLUSTER_GAP    = 1024 * 1024;
 constexpr uint8_t  HOT_MARKED         = 4;
+constexpr uint8_t  HOT_MARKED_OPEN    = 5;
 constexpr uint32_t MARKED_REGION_CAP  = 1u << 16u;
 constexpr size_t   MARKED_RUNS        = 256;
 constexpr size_t   MARK_BLOCK_PAGES   = 16;
@@ -281,6 +282,16 @@ struct PageManager::Impl {
 				}
 			}
 
+			if constexpr (track && !is_read) {
+				if (page.hot == HOT_MARKED_OPEN && update && new_count == 1) [[unlikely]] {
+					page.hot = HOT_MARKED;
+					if (page.access_watchers == 0) {
+						(void)ArmPage(address, BackingDelta(address));
+					}
+					mark_rearmed.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
+
 			if (new_perms != perms) [[unlikely]] {
 				release_pending();
 				perms = new_perms;
@@ -450,7 +461,7 @@ struct PageManager::Impl {
 		return state.Perms() != old_perms;
 	}
 
-	void LeaveMarked(Region& region, uint64_t region_base, size_t first, size_t last, bool refuse, bool forget)
+	void LeaveMarked(Region& region, uint64_t region_base, size_t first, size_t last, MarkLeave leave, uint8_t cause)
 	    KYTY_REQUIRES(region.lock) {
 		size_t run_begin = 0;
 		size_t run_pages = 0;
@@ -461,20 +472,31 @@ struct PageManager::Impl {
 				run_pages = 0;
 			}
 		};
+		const bool refuse = leave == MarkLeave::Refuse;
 		for (size_t page = first; page < last; page++) {
 			auto&      state   = region.pages[page];
 			const auto address = region_base + page * PAGE_SIZE;
 			bool       changed = false;
-			if (state.hot == HOT_MARKED) {
-				changed = Demote(region, state, page);
-				(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
+			if (leave == MarkLeave::Open) {
+				if (state.hot == HOT_MARKED) {
+					const auto old_perms = state.Perms();
+					state.hot            = HOT_MARKED_OPEN;
+					(void)ArmPage(address, 0);
+					changed = state.Perms() != old_perms;
+					mark_opened.fetch_add(1, std::memory_order_relaxed);
+				}
+			} else {
+				if (state.hot == HOT_MARKED || state.hot == HOT_MARKED_OPEN) {
+					changed = Demote(region, state, page);
+					(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
+				}
+				if (refuse) {
+					state.mark_refusals = cause != 0 ? cause : 1;
+				} else if (leave == MarkLeave::Forget) {
+					state.mark_refusals = 0;
+				}
+				(void)ArmPage(address, state.mark_refusals != 0 ? MARK_REFUSED : 0);
 			}
-			if (refuse) {
-				state.mark_refusals = 1;
-			} else if (forget) {
-				state.mark_refusals = 0;
-			}
-			(void)ArmPage(address, state.mark_refusals != 0 ? MARK_REFUSED : 0);
 			if (changed && run_pages != 0 && run_begin + run_pages == page && state.Perms() == run_perms) {
 				run_pages++;
 			} else if (changed) {
@@ -532,7 +554,9 @@ struct PageManager::Impl {
 		                     stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE] + stats.refusals[KYTY_SELFMARK_REFUSAL_NO_WINDOW] +
 		                     stats.refusals[KYTY_SELFMARK_REFUSAL_FROZEN];
 		const auto back    = [&](uint32_t kind) { return notes[KYTY_SELFMARK_NOTE_GIVEN_BACK + kind]; };
-		char       line[2048];
+		const auto why     = [&](uint32_t state) { return notes[KYTY_SELFMARK_NOTE_PAGE_STATE + state]; };
+		const auto by      = [&](uint32_t kind) { return notes[KYTY_SELFMARK_NOTE_GIVEN_BACK_BY + kind]; };
+		char       line[4096];
 		std::snprintf(line, sizeof(line),
 		              "[kyty-selfmark] summary of the last %.0f s: %" PRIu64 " write sites patched (%" PRIu64 " in all, %" PRIu64
 		              " shorter than a jump, %" PRIu64 " ahead of their first fault, %" PRIu64 " relay regions), short sites %s, %" PRIu64
@@ -547,7 +571,13 @@ struct PageManager::Impl {
 		              " libSceAgc, %" PRIu64 " other host code, %" PRIu64 " page not watched; blocks given back by writer: %" PRIu64
 		              " patched site, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64 " no jump window, %" PRIu64
 		              " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64 " libSceAgc, %" PRIu64
-		              " other host code\n",
+		              " other host code; unpatched writes open the page for a cycle %s, %" PRIu64 " pages opened, %" PRIu64
+		              " armed again; faults of patched sites by page state: %" PRIu64 " unknown, %" PRIu64 " marked, %" PRIu64
+		              " in a block given back, %" PRIu64 " written by the GPU, %" PRIu64 " open for the cycle, %" PRIu64 " not watched, %" PRIu64
+		              " hot, %" PRIu64 " markable; those in a block given back, by who gave it back: %" PRIu64 " unrecorded, %" PRIu64
+		              " patched site, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64 " no jump window, %" PRIu64
+		              " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64 " libSceAgc, %" PRIu64
+		              " other host code, %" PRIu64 " prepared host write\n",
 		              static_cast<double>(now_ns - last) / 1e9, patched, stats.patched, stats.punned, stats.ahead, stats.hop_regions,
 		              mark_short.load(std::memory_order_relaxed) ? "on" : "off", refusal, stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_STORE],
 		              stats.refusals[KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE], stats.refusals[KYTY_SELFMARK_REFUSAL_NO_WINDOW],
@@ -561,7 +591,15 @@ struct PageManager::Impl {
 		              notes[KYTY_SELFMARK_NOTE_HOST_AGC], notes[KYTY_SELFMARK_NOTE_HOST_OTHER], notes[KYTY_SELFMARK_NOTE_UNTRACKED],
 		              back(KYTY_SELFMARK_NOTE_PATCHED_UNARMED), back(KYTY_SELFMARK_NOTE_GUEST_SHORT), back(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE),
 		              back(KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW), back(KYTY_SELFMARK_NOTE_GUEST_FROZEN), back(KYTY_SELFMARK_NOTE_GUEST_OTHER),
-		              back(KYTY_SELFMARK_NOTE_GUEST_BUSY), back(KYTY_SELFMARK_NOTE_HOST_AGC), back(KYTY_SELFMARK_NOTE_HOST_OTHER));
+		              back(KYTY_SELFMARK_NOTE_GUEST_BUSY), back(KYTY_SELFMARK_NOTE_HOST_AGC), back(KYTY_SELFMARK_NOTE_HOST_OTHER),
+		              mark_open.load(std::memory_order_relaxed) ? "on" : "off", take(mark_opened), take(mark_rearmed),
+		              why(KYTY_SELFMARK_PAGE_UNKNOWN), why(KYTY_SELFMARK_PAGE_MARKED), why(KYTY_SELFMARK_PAGE_GIVEN_BACK),
+		              why(KYTY_SELFMARK_PAGE_GPU_WRITTEN), why(KYTY_SELFMARK_PAGE_OPEN), why(KYTY_SELFMARK_PAGE_NOT_WATCHED),
+		              why(KYTY_SELFMARK_PAGE_HOT), why(KYTY_SELFMARK_PAGE_MARKABLE), by(0), by(1 + KYTY_SELFMARK_NOTE_PATCHED_UNARMED),
+		              by(1 + KYTY_SELFMARK_NOTE_GUEST_SHORT), by(1 + KYTY_SELFMARK_NOTE_GUEST_NOT_STORE),
+		              by(1 + KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW), by(1 + KYTY_SELFMARK_NOTE_GUEST_FROZEN),
+		              by(1 + KYTY_SELFMARK_NOTE_GUEST_OTHER), by(1 + KYTY_SELFMARK_NOTE_GUEST_BUSY), by(1 + KYTY_SELFMARK_NOTE_HOST_AGC),
+		              by(1 + KYTY_SELFMARK_NOTE_HOST_OTHER), by(1 + KYTY_SELFMARK_NOTE_HOST_PREPARED));
 		Log::WriteToConsoleAndLog(line);
 #endif
 	}
@@ -686,7 +724,10 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    mark_patched_seen {0};
 	std::atomic<uint64_t>                    mark_refusals_seen {0};
 	std::atomic<bool>                        mark_short {true};
-	std::array<std::atomic<uint64_t>, 32>    mark_notes_seen {};
+	std::atomic<bool>                        mark_open {true};
+	std::atomic<uint64_t>                    mark_opened {0};
+	std::atomic<uint64_t>                    mark_rearmed {0};
+	std::array<std::atomic<uint64_t>, 64>    mark_notes_seen {};
 
 	std::mutex                                  hot_mutex;
 	std::map<uint64_t, uint32_t>                hot_pages;
@@ -995,12 +1036,15 @@ bool PageManager::MarkWritten(uint64_t vaddr) {
 	if (state->access_watchers != 0) {
 		return false;
 	}
+	if (state->hot == HOT_MARKED_OPEN) {
+		return false;
+	}
 	if (state->hot == HOT_MARKED) {
 		const auto delta = BackingDelta(page);
 		if (delta != 0 && ArmPage(page, delta)) {
 			return true;
 		}
-		impl.LeaveMarked(*region, region_base, index, index + 1, true, false);
+		impl.LeaveMarked(*region, region_base, index, index + 1, MarkLeave::Refuse, 0);
 		return false;
 	}
 	if (!Impl::Markable(*state)) {
@@ -1019,10 +1063,13 @@ bool PageManager::MarkWritten(uint64_t vaddr) {
 	return true;
 }
 
-void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave) {
+void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, uint8_t cause) {
 	auto& impl = *m_impl;
 	if (size == 0 || !GuestRange {vaddr, size}.Valid() || impl.marked_region_count.load(std::memory_order_acquire) == 0) {
 		return;
+	}
+	if (leave == MarkLeave::Refuse && impl.mark_open.load(std::memory_order_relaxed)) {
+		leave = MarkLeave::Open;
 	}
 	const bool refuse = leave == MarkLeave::Refuse;
 	const auto end    = Common::AlignUp(vaddr + size, PAGE_SIZE);
@@ -1043,20 +1090,49 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave) 
 				if (refuse) {
 					bool any = false;
 					for (auto page = first; page < last && !any; page++) {
-						any = region->pages[page].hot == HOT_MARKED;
+						any = region->pages[page].hot == HOT_MARKED || region->pages[page].hot == HOT_MARKED_OPEN;
 					}
 					if (any) {
 						first = first / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
 						last  = (last + MARK_BLOCK_PAGES - 1) / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
-						impl.LeaveMarked(*region, region_base, first, last, true, false);
+						impl.LeaveMarked(*region, region_base, first, last, MarkLeave::Refuse, cause);
 					}
 				} else {
-					impl.LeaveMarked(*region, region_base, first, last, false, leave == MarkLeave::Forget);
+					impl.LeaveMarked(*region, region_base, first, last, leave, cause);
 				}
 			}
 		}
 		at = until;
 	}
+}
+
+uint32_t PageManager::MarkState(uint64_t vaddr) {
+	auto& impl = *m_impl;
+	if (!GuestRange {vaddr, 1}.Valid()) {
+		return 0;
+	}
+	Impl::Region* region = nullptr;
+	const auto*   state  = impl.FindPage(Common::AlignDown(vaddr, PAGE_SIZE), &region);
+	if (state == nullptr) {
+		return 0;
+	}
+	SpinGuard lock(region->lock);
+	if (state->access_watchers != 0) {
+		return 3;
+	}
+	if (state->hot == HOT_MARKED) {
+		return 1;
+	}
+	if (state->hot == HOT_MARKED_OPEN) {
+		return 4;
+	}
+	if (state->mark_refusals != 0) {
+		return 2u | (uint32_t {state->mark_refusals} << 8u);
+	}
+	if (state->hot != HOT_COLD) {
+		return 6;
+	}
+	return state->write_watchers == 0 ? 5 : 7;
 }
 
 void PageManager::ForgetAllWritten() {
@@ -1081,6 +1157,10 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 		const bool on = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingShort);
 		if (impl.mark_short.exchange(on, std::memory_order_acq_rel) != on) {
 			kyty_selfmark_set_short(on);
+			ForgetAllWritten();
+		}
+		const bool open = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingOpen);
+		if (impl.mark_open.exchange(open, std::memory_order_acq_rel) != open) {
 			ForgetAllWritten();
 		}
 		kyty_selfmark_service();

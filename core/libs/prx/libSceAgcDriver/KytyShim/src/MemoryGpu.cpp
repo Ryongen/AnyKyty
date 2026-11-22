@@ -312,10 +312,14 @@ bool MarkWrittenPage(uint64_t vaddr) noexcept {
 	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, 1) && g_gpu_resources->MarkWritten(vaddr);
 }
 
-void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse) noexcept {
+void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse, uint8_t cause) noexcept {
 	if (g_gpu_resources != nullptr && size != 0 && IsGpuAddressRange(vaddr, size)) {
-		g_gpu_resources->UnmarkWritten(vaddr, size, refuse ? Graphics::PageManager::MarkLeave::Refuse : Graphics::PageManager::MarkLeave::Release);
+		g_gpu_resources->UnmarkWritten(vaddr, size, refuse ? Graphics::PageManager::MarkLeave::Refuse : Graphics::PageManager::MarkLeave::Release, cause);
 	}
+}
+
+uint32_t MarkedPageState(uint64_t vaddr) noexcept {
+	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, 1) ? g_gpu_resources->MarkState(vaddr) : 0;
 }
 
 }
