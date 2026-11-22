@@ -67,6 +67,10 @@ void WriteOnThread(Store store, uint64_t pointer, uint64_t value) {
 	writer.join();
 }
 
+int64_t GivenBackBy(uint32_t writer) {
+	return KYTY_SELFMARK_DELTA_REFUSED + int64_t {writer} + 1;
+}
+
 bool HoldsJump(Store store, uint32_t pads) {
 	const auto* code = reinterpret_cast<const volatile uint8_t*>(store);
 	for (uint32_t pad = 0; pad < pads; pad++) {
@@ -197,11 +201,8 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	if (g_faults.load() != before + 1) return "a write site that cannot be corrected did not fault once";
 	if (*reinterpret_cast<const volatile uint8_t*>(unpatched) != Exchange[0]) return "a write site that cannot be corrected was modified";
 	if (Read(target + 8) != 0x4444) return "the write of an uncorrected site did not reach guest memory";
-	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the page was not given back to faults after a write that cannot mark it";
-	if (kyty_selfmark_armed(page + 2 * Page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block of a page given back to faults was left marked";
-	if (fixture.renderer.MarkState(page) != (KYTY_SELFMARK_PAGE_GIVEN_BACK | ((KYTY_SELFMARK_NOTE_GUEST_NOT_STORE + 1u) << 8u))) {
-		return "the writer that gave the block back was not recorded";
-	}
+	if (kyty_selfmark_armed(page) != GivenBackBy(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE)) return "the page was not given back to faults after a write that cannot mark it, or its writer was not recorded";
+	if (kyty_selfmark_armed(page + 2 * Page) != GivenBackBy(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE)) return "the block of a page given back to faults was left marked";
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of an uncorrected site did not report the page at once";
 
 	before = g_faults.load();
@@ -216,7 +217,7 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	WriteOnThread(store, target - Displacement, 0x6666);
 	if (g_faults.load() != before + 1) return "a corrected site did not fault once on a page given back to faults";
 	if (Read(target) != 0x6666) return "the write to a page given back to faults did not reach guest memory";
-	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "a page given back to faults was marked again";
+	if (kyty_selfmark_armed(page) != GivenBackBy(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE)) return "a page given back to faults was marked again";
 	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of a corrected site on a page given back to faults did not report it at once";
 	if (kyty_selfmark_any(page, page + Page)) return "a write to a page given back to faults left a card";
 	if (!fixture.GpuHolds(target, 0x6666)) return "the GPU buffer does not hold the write to a page given back to faults";

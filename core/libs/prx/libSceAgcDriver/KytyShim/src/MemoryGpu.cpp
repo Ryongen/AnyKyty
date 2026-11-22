@@ -318,8 +318,5 @@ void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse, uint8_t caus
 	}
 }
 
-uint32_t MarkedPageState(uint64_t vaddr) noexcept {
-	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, 1) ? g_gpu_resources->MarkState(vaddr) : 0;
-}
 
 }

@@ -2,6 +2,7 @@ use crate::os;
 use core::sync::atomic::{AtomicI64, AtomicPtr, AtomicU64, AtomicU8, Ordering};
 
 pub const REFUSED: i64 = 1;
+pub const REFUSALS: i64 = 32;
 const CHUNK: u64 = 64 * 1024;
 const DELTA_CHUNKS: usize = 1 << 16;
 const CARD_CHUNKS: usize = 1 << 13;
@@ -80,7 +81,7 @@ pub fn table_fault(address: u64) -> bool {
 
 pub fn arm(address: u64, delta: i64) -> bool {
     let page = address / os::PAGE;
-    if page >= pages() || (delta != REFUSED && delta as u64 % os::PAGE != 0) {
+    if page >= pages() || (!(REFUSED..REFUSALS).contains(&delta) && delta as u64 % os::PAGE != 0) {
         return false;
     }
     let table = delta_base();

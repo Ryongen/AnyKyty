@@ -327,6 +327,10 @@ std::uint64_t MarkedTarget(const FaultContext& context, std::uint64_t entry) {
     return kyty_selfmark_target(entry, registers);
 }
 
+bool GivenBack(std::int64_t delta) {
+    return delta >= KYTY_SELFMARK_DELTA_REFUSED && delta < KYTY_SELFMARK_DELTA_REFUSALS;
+}
+
 bool PageArmed(std::uint64_t page) {
     return static_cast<std::uint64_t>(kyty_selfmark_armed(page)) >= KYTY_SELFMARK_DELTA_LEAST;
 }
@@ -373,23 +377,20 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
     write.resume      = fault.outcome == KYTY_SELFMARK_SLOW_STORE;
     write.first       = target & ~(MarkPage - 1);
     write.last        = (target + (fault.width != 0 ? fault.width - 1 : 0)) & ~(MarkPage - 1);
-    const auto arm    = [](std::uint64_t at) { return kyty_selfmark_armed(at) != KYTY_SELFMARK_DELTA_REFUSED && Memory::MarkWrittenPage(at); };
+    const auto arm    = [](std::uint64_t at) { return !GivenBack(kyty_selfmark_armed(at)) && Memory::MarkWrittenPage(at); };
     write.served      = arm(write.first) && (write.last == write.first || arm(write.last)) && MarkedFastPath(write.first, write.last);
     if (write.served) {
         kyty_selfmark_note(KYTY_SELFMARK_NOTE_SERVED);
     } else {
-        const auto    state  = Memory::MarkedPageState(page);
-        const auto    by     = (state >> 8u) < KYTY_SELFMARK_NOTE_WRITERS ? state >> 8u : 0u;
+        const auto    delta  = kyty_selfmark_armed(page);
         std::uint32_t writer = KYTY_SELFMARK_FAULT_PATCHED_OTHER;
         kyty_selfmark_note(KYTY_SELFMARK_NOTE_PATCHED_UNARMED);
-        kyty_selfmark_note(KYTY_SELFMARK_NOTE_PAGE_STATE + (state & 0xFFu));
-        if ((state & 0xFFu) == KYTY_SELFMARK_PAGE_GIVEN_BACK) {
-            kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK_BY + by);
-            writer = KYTY_SELFMARK_FAULT_PATCHED_GIVEN_BACK + by;
-        } else if ((state & 0xFFu) == KYTY_SELFMARK_PAGE_GPU_WRITTEN) {
-            writer = KYTY_SELFMARK_FAULT_PATCHED_GPU_WRITTEN;
-        } else if ((state & 0xFFu) == KYTY_SELFMARK_PAGE_MARKED) {
-            writer = KYTY_SELFMARK_FAULT_PATCHED_MARKED;
+        if (GivenBack(delta)) {
+            const auto by = static_cast<std::uint32_t>(delta - KYTY_SELFMARK_DELTA_REFUSED);
+            kyty_selfmark_note(KYTY_SELFMARK_NOTE_GIVEN_BACK_BY + (by < KYTY_SELFMARK_NOTE_WRITERS ? by : 0u));
+            writer = KYTY_SELFMARK_FAULT_PATCHED_GIVEN_BACK + (by < KYTY_SELFMARK_NOTE_WRITERS ? by : 0u);
+        } else {
+            kyty_selfmark_note(KYTY_SELFMARK_NOTE_NOT_GIVEN_BACK);
         }
         kyty_selfmark_set_writer(writer);
     }
