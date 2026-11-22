@@ -1139,56 +1139,6 @@ fn refused_pages_take_the_slow_path() {
 }
 
 #[test]
-fn extended_stores_follow_their_switch() {
-    let (world, _guard) = world();
-    let bytes: &[u8] = &[0xC4, 0xE3, 0x79, 0x17, 0x44, 0x81, 0x08, 0x02];
-    let store = decode::decode(bytes).unwrap();
-    let page = world.primary + 0x7100 * PAGE;
-    let target = page + 0x40;
-    let delta = world.alias.wrapping_sub(world.primary) as i64;
-    let site = stub(world, bytes);
-
-    sites::set_extended(false);
-    fill(world, target);
-    protect(page, false);
-    LAST_REFUSAL.store(0, Ordering::SeqCst);
-    let before = FAULTS.load(Ordering::SeqCst);
-    let mut regs = seed(0);
-    aim(&mut regs, &store, target);
-    call(site, &mut regs);
-    assert_eq!(FAULTS.load(Ordering::SeqCst), before + 1);
-    assert_eq!(LAST_REFUSAL.load(Ordering::SeqCst), Refusal::Extended as u64);
-    assert_eq!(code_at(site, bytes.len()), bytes, "an extended store keeps its bytes while its switch is off");
-    assert!(taken(page, page + PAGE).is_empty());
-
-    sites::set_extended(true);
-    protect(page, false);
-    let before = FAULTS.load(Ordering::SeqCst);
-    let mut regs = seed(0);
-    aim(&mut regs, &store, target);
-    call(site, &mut regs);
-    assert_eq!(FAULTS.load(Ordering::SeqCst), before + 1);
-    assert!(holds_jump(site) && is_patched(site), "an extended store is patched once its switch is back");
-    assert_eq!(taken(page, page + PAGE), vec![(page, page + PAGE)]);
-
-    sites::set_extended(false);
-    assert!(cards::arm(page, delta));
-    protect(page, false);
-    fill(world, target);
-    LAST_REFUSAL.store(0, Ordering::SeqCst);
-    let before = FAULTS.load(Ordering::SeqCst);
-    let mut regs = seed(0);
-    aim(&mut regs, &store, target);
-    call(site, &mut regs);
-    assert_eq!(FAULTS.load(Ordering::SeqCst), before + 1, "a patched extended store takes the slow path on an armed page while its switch is off");
-    assert_eq!(LAST_REFUSAL.load(Ordering::SeqCst), Refusal::Extended as u64);
-    assert!(taken(page, page + PAGE).is_empty());
-    sites::set_extended(true);
-    cards::arm(page, 0);
-    protect(page, true);
-}
-
-#[test]
 fn card_runs() {
     let (world, _guard) = world();
     let base = world.primary + 0x2000 * PAGE;

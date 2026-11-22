@@ -13,10 +13,6 @@ namespace Common::RuntimeSwitches {
 
 enum class Switch : uint32_t {
 	GenericComputeVariant,
-	SelfMarkingWrites,
-	AgcSelfMark,
-	SelfMarkingRmw,
-	SelfMarkingAging,
 	Count
 };
 

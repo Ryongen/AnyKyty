@@ -7,7 +7,6 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #if defined(KYTY_SELF_MARKING)
-#include "common/runtimeSwitches.h"
 #include "kyty_selfmark_rs.h"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
 #endif
@@ -355,8 +354,7 @@ int64_t ArmedForCommandWrite(uint64_t page) noexcept {
 }
 
 uint64_t CommandWriteView(uint64_t vaddr, uint64_t size) noexcept {
-	if (g_gpu_resources == nullptr || size == 0 || !IsGpuAddressRange(vaddr, size) || !kyty_selfmark_enabled() ||
-	    !Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::AgcSelfMark)) {
+	if (g_gpu_resources == nullptr || size == 0 || !IsGpuAddressRange(vaddr, size) || !kyty_selfmark_enabled()) {
 		return vaddr;
 	}
 	const auto first = vaddr & ~(CommandPage - 1);

@@ -20,10 +20,9 @@ pub enum Refusal {
     NoCoreSync = 15,
     NoWindow = 16,
     Frozen = 17,
-    Extended = 18,
 }
 
-pub const REFUSAL_COUNT: usize = 19;
+pub const REFUSAL_COUNT: usize = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
@@ -68,7 +67,6 @@ pub struct Store {
     pub plain: Plain,
     pub ext_x: bool,
     pub ext_b: bool,
-    pub extended: bool,
 }
 
 impl Store {
@@ -99,7 +97,6 @@ struct Class {
     reg_is_gpr: bool,
     imm_len: u8,
     plain: Plain,
-    extended: bool,
 }
 
 fn legacy_one(opcode: u8, reg: u8, wide: bool, word: bool, repeat: bool) -> Result<Class, Refusal> {
@@ -114,17 +111,17 @@ fn legacy_one(opcode: u8, reg: u8, wide: bool, word: bool, repeat: bool) -> Resu
         4
     };
     match opcode {
-        0x88 => Ok(Class { width: 1, reg_is_gpr: true, imm_len: 0, plain: Plain::Same, extended: false }),
-        0x89 => Ok(Class { width: size, reg_is_gpr: true, imm_len: 0, plain: Plain::Same, extended: false }),
-        0xC6 if reg == 0 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 1, plain: Plain::Same, extended: false }),
-        0xC7 if reg == 0 => Ok(Class { width: size, reg_is_gpr: false, imm_len: if size == 2 { 2 } else { 4 }, plain: Plain::Same, extended: false }),
-        0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 => Ok(Class { width: 1, reg_is_gpr: true, imm_len: 0, plain: Plain::Same, extended: true }),
-        0x01 | 0x09 | 0x11 | 0x19 | 0x21 | 0x29 | 0x31 => Ok(Class { width: size, reg_is_gpr: true, imm_len: 0, plain: Plain::Same, extended: true }),
-        0x80 if reg != 7 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 1, plain: Plain::Same, extended: true }),
-        0x81 if reg != 7 => Ok(Class { width: size, reg_is_gpr: false, imm_len: if size == 2 { 2 } else { 4 }, plain: Plain::Same, extended: true }),
-        0x83 if reg != 7 => Ok(Class { width: size, reg_is_gpr: false, imm_len: 1, plain: Plain::Same, extended: true }),
-        0xFE if reg <= 1 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 0, plain: Plain::Same, extended: true }),
-        0xFF if reg <= 1 => Ok(Class { width: size, reg_is_gpr: false, imm_len: 0, plain: Plain::Same, extended: true }),
+        0x88 => Ok(Class { width: 1, reg_is_gpr: true, imm_len: 0, plain: Plain::Same }),
+        0x89 => Ok(Class { width: size, reg_is_gpr: true, imm_len: 0, plain: Plain::Same }),
+        0xC6 if reg == 0 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 1, plain: Plain::Same }),
+        0xC7 if reg == 0 => Ok(Class { width: size, reg_is_gpr: false, imm_len: if size == 2 { 2 } else { 4 }, plain: Plain::Same }),
+        0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 => Ok(Class { width: 1, reg_is_gpr: true, imm_len: 0, plain: Plain::Same }),
+        0x01 | 0x09 | 0x11 | 0x19 | 0x21 | 0x29 | 0x31 => Ok(Class { width: size, reg_is_gpr: true, imm_len: 0, plain: Plain::Same }),
+        0x80 if reg != 7 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 1, plain: Plain::Same }),
+        0x81 if reg != 7 => Ok(Class { width: size, reg_is_gpr: false, imm_len: if size == 2 { 2 } else { 4 }, plain: Plain::Same }),
+        0x83 if reg != 7 => Ok(Class { width: size, reg_is_gpr: false, imm_len: 1, plain: Plain::Same }),
+        0xFE if reg <= 1 => Ok(Class { width: 1, reg_is_gpr: false, imm_len: 0, plain: Plain::Same }),
+        0xFF if reg <= 1 => Ok(Class { width: size, reg_is_gpr: false, imm_len: 0, plain: Plain::Same }),
         _ => Err(Refusal::NotStore),
     }
 }
@@ -133,7 +130,7 @@ fn extract(opcode: u8, pp: u8, wide: bool, long: bool, vex: bool) -> Result<Clas
     if pp != 1 {
         return Err(Refusal::NotStore);
     }
-    let class = |width: u16| Ok(Class { width, reg_is_gpr: false, imm_len: 1, plain: Plain::Same, extended: true });
+    let class = |width: u16| Ok(Class { width, reg_is_gpr: false, imm_len: 1, plain: Plain::Same });
     match opcode {
         0x14 if !long => class(1),
         0x15 if !long => class(2),
@@ -146,7 +143,7 @@ fn extract(opcode: u8, pp: u8, wide: bool, long: bool, vex: bool) -> Result<Clas
 
 fn vector(opcode: u8, pp: u8, wide: bool, long: bool, vex: bool) -> Result<Class, Refusal> {
     let full: u16 = if long { 32 } else { 16 };
-    let class = |width: u16, plain: Plain| Ok(Class { width, reg_is_gpr: false, imm_len: 0, plain, extended: false });
+    let class = |width: u16, plain: Plain| Ok(Class { width, reg_is_gpr: false, imm_len: 0, plain });
     match (opcode, pp) {
         (0x11, 0) | (0x11, 1) => class(full, Plain::Same),
         (0x11, 2) => class(4, Plain::Same),
@@ -158,7 +155,7 @@ fn vector(opcode: u8, pp: u8, wide: bool, long: bool, vex: bool) -> Result<Class
         (0xE7, 1) => class(full, Plain::Opcode(0x7F)),
         (0xD6, 1) if !long => class(8, Plain::Same),
         (0x7E, 1) if !long => class(if wide { 8 } else { 4 }, Plain::Same),
-        (0xC3, 0) if !vex => Ok(Class { width: if wide { 8 } else { 4 }, reg_is_gpr: true, imm_len: 0, plain: Plain::OneByte(0x89), extended: false }),
+        (0xC3, 0) if !vex => Ok(Class { width: if wide { 8 } else { 4 }, reg_is_gpr: true, imm_len: 0, plain: Plain::OneByte(0x89) }),
         _ => Err(Refusal::NotStore),
     }
 }
@@ -385,7 +382,6 @@ pub unsafe fn decode_at(code: *const u8) -> Result<Store, Refusal> {
         plain: class.plain,
         ext_x,
         ext_b,
-        extended: class.extended,
     })
 }
 
@@ -532,7 +528,6 @@ mod tests {
     fn extracts_and_integer_read_modify_writes() {
         let extract = ok(&[0xC4, 0xE3, 0x79, 0x17, 0x44, 0x81, 0x08, 0x02]);
         assert_eq!((extract.len, extract.width, extract.map, extract.imm_len, extract.base, extract.index, extract.scale, extract.disp), (8, 4, 3, 1, 1, Some(0), 4, 8));
-        assert!(extract.extended);
         assert_eq!(extract.used, (1 << 1) | (1 << 0));
         let high = ok(&[0xC4, 0x43, 0x79, 0x17, 0x4C, 0x0E, 0x10, 0x03]);
         assert_eq!((high.len, high.reg, high.base, high.index), (8, 9, 14, Some(1)));
@@ -546,7 +541,7 @@ mod tests {
         assert_eq!(ok(&[0xC4, 0xE3, 0x7D, 0x39, 0x47, 0x20, 0x01]).width, 16);
         let add = ok(&[0x44, 0x01, 0x63, 0x10]);
         assert_eq!((add.len, add.width, add.reg, add.base, add.disp), (4, 4, 12, 3, 0x10));
-        assert!(add.extended && add.short());
+        assert!(add.short());
         assert_eq!(add.used, (1 << 12) | (1 << 3));
         let immediate = ok(&[0x48, 0x83, 0x6C, 0x8B, 0x10, 0x01]);
         assert_eq!((immediate.len, immediate.width, immediate.imm_len, immediate.base, immediate.index, immediate.scale), (6, 8, 1, 3, Some(1), 4));
@@ -559,7 +554,6 @@ mod tests {
         let byte = ok(&[0x00, 0x27]);
         assert!(byte.high_byte);
         assert_eq!(byte.used, (1 << 7) | (1 << 0));
-        assert!(!ok(&[0x48, 0x89, 0x17]).extended);
     }
 
     #[test]

@@ -37,7 +37,6 @@ const SPOT_STEP: u64 = 8;
 const ADDRESS_BITS: u64 = 48;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static EXTENDED: AtomicU8 = AtomicU8::new(1);
 static LOCK: AtomicBool = AtomicBool::new(false);
 static PATCHING: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR: AtomicUsize = AtomicUsize::new(0);
@@ -65,9 +64,6 @@ pub static BUSY: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_FAULTS: AtomicU64 = AtomicU64::new(0);
 pub static BREAKS: AtomicU64 = AtomicU64::new(0);
 pub static NOTED: [AtomicU64; NOTES] = [const { AtomicU64::new(0) }; NOTES];
-pub const NOTED_SITES: usize = 256;
-pub static NOTED_SITE_KEYS: [AtomicU64; NOTED_SITES] = [const { AtomicU64::new(0) }; NOTED_SITES];
-pub static NOTED_SITE_COUNTS: [AtomicU64; NOTED_SITES] = [const { AtomicU64::new(0) }; NOTED_SITES];
 static WRITER: [AtomicU64; WRITERS] = [const { AtomicU64::new(0) }; WRITERS];
 
 pub fn configure(allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>, guest: Option<GuestCode>) {
@@ -78,22 +74,6 @@ pub fn configure(allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>
 
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Release);
-}
-
-pub fn extended_on() -> bool {
-    EXTENDED.load(Ordering::Acquire) != 0
-}
-
-pub fn set_extended(on: bool) {
-    if EXTENDED.swap(u8::from(on), Ordering::AcqRel) != u8::from(on) && on {
-        for value in SITE_VALUES.iter() {
-            let _ = value.compare_exchange(REFUSED | Refusal::Extended as u64, 0, Ordering::AcqRel, Ordering::Relaxed);
-        }
-    }
-}
-
-fn extended_site(entry: u64) -> bool {
-    (unsafe { core::ptr::read((entry + SLOW_AT as u64) as *const u64) } >> 40) & 1 != 0
 }
 
 pub fn enabled() -> bool {
@@ -455,9 +435,6 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
         Ok(store) => store,
         Err(refusal) => return refuse(site, refusal),
     };
-    if store.extended && !extended_on() {
-        return refuse(site, Refusal::Extended);
-    }
     let length = store.len as usize;
     let short = store.short();
     if frozen(site, length as u64) {
@@ -465,7 +442,7 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
     }
     let mut original = [0u8; MAX_LEN + 1];
     core::ptr::copy_nonoverlapping(site as *const u8, original.as_mut_ptr(), length);
-    let tables = Tables { delta: cards::delta_base(), cards: cards::card_base(), pages: cards::pages() as u32, extended: &EXTENDED as *const AtomicU8 as u64 };
+    let tables = Tables { delta: cards::delta_base(), cards: cards::card_base(), pages: cards::pages() as u32 };
     if tables.pages == 0 {
         return (OUTCOME_NONE, 0);
     }
@@ -621,9 +598,6 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
     if let Some((entry, slow)) = trampoline_of(address) {
         if slow {
             SLOW_FAULTS.fetch_add(1, Ordering::Relaxed);
-            if !extended_on() && extended_site(entry) {
-                return (OUTCOME_REFUSED, Refusal::Extended as u64);
-            }
             return (OUTCOME_SLOW_STORE, entry);
         }
         return (OUTCOME_INSIDE, entry);
@@ -634,9 +608,6 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
     }
     if known != 0 {
         if jumps_to(address, known) {
-            if !extended_on() && extended_site(known) {
-                return (OUTCOME_REFUSED, Refusal::Extended as u64);
-            }
             return (OUTCOME_PATCHED, known);
         }
         if PATCHING.load(Ordering::SeqCst) == address {
@@ -697,25 +668,6 @@ pub fn width_of(entry: u64) -> u32 {
 
 pub fn length_of(entry: u64) -> u32 {
     (unsafe { core::ptr::read((entry + SLOW_AT as u64) as *const u64) } >> 16) as u32 & 0xFF
-}
-
-pub fn note_site(offset: u64) {
-    let key = offset.wrapping_add(1);
-    let start = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 56) as usize;
-    for probe in 0..NOTED_SITES {
-        let slot = (start + probe) % NOTED_SITES;
-        let seen = NOTED_SITE_KEYS[slot].load(Ordering::Relaxed);
-        if seen == key
-            || (seen == 0
-                && match NOTED_SITE_KEYS[slot].compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
-                    Ok(_) => true,
-                    Err(now) => now == key,
-                })
-        {
-            NOTED_SITE_COUNTS[slot].fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    }
 }
 
 pub fn note(kind: usize) {

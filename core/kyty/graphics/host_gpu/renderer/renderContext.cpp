@@ -120,11 +120,6 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 }
 
 void RenderContext::CollectHotPageWrites(uint64_t vaddr, uint64_t size) {
-#if defined(__GNUC__) || defined(__clang__)
-	if (size == 0) {
-		m_page_manager.NoteCollectCaller(reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
-	}
-#endif
 	m_page_manager.CollectMarkedWrites(
 	    [](void* context, uint64_t begin, uint64_t end) {
 		    auto&      self    = *static_cast<RenderContext*>(context);
