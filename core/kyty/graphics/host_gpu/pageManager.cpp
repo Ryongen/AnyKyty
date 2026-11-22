@@ -33,6 +33,9 @@
 
 #if defined(KYTY_SELF_MARKING)
 #include "kyty_selfmark_rs.h"
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+#include <dlfcn.h>
+#endif
 #endif
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -613,6 +616,27 @@ struct PageManager::Impl {
 		std::array<uint64_t, 256> site_counts {};
 		const auto sites = kyty_selfmark_sites(site_keys.data(), site_counts.data(), site_keys.size());
 		std::array<char, 16384> sites_line {};
+		used = static_cast<size_t>(std::snprintf(sites_line.data(), sites_line.size(), "[kyty-selfmark-collect] global collections since the start: %" PRIu64 " found no card; by caller:",
+		                                         collect_empty.load(std::memory_order_relaxed)));
+		for (size_t slot = 0; slot < collect_callers.size() && used + 160 < sites_line.size(); slot++) {
+			const auto caller = collect_callers[slot].load(std::memory_order_relaxed);
+			if (caller == 0) {
+				continue;
+			}
+			uint64_t    offset = caller;
+			const char* module = "?";
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+			Dl_info info {};
+			if (dladdr(reinterpret_cast<void*>(caller), &info) != 0 && info.dli_fbase != nullptr) {
+				offset = caller - reinterpret_cast<uintptr_t>(info.dli_fbase);
+				module = info.dli_fname != nullptr ? std::strrchr(info.dli_fname, '/') != nullptr ? std::strrchr(info.dli_fname, '/') + 1 : info.dli_fname : "?";
+			}
+#endif
+			used += static_cast<size_t>(std::snprintf(sites_line.data() + used, sites_line.size() - used, " %s+0x%" PRIx64 "=%" PRIu64, module, offset,
+			                                          collect_caller_counts[slot].load(std::memory_order_relaxed)));
+		}
+		std::snprintf(sites_line.data() + used, sites_line.size() - used, "\n");
+		Log::WriteToConsoleAndLog(sites_line.data());
 		for (const bool agc: {true, false}) {
 			used = static_cast<size_t>(std::snprintf(sites_line.data(), sites_line.size(), agc ? "[kyty-selfmark-agc] libSceAgc write faults since the start by offset in its module:"
 			                                                                  : "[kyty-selfmark-refused] faults of guest stores refused as not plain since the start by site:"));
@@ -748,6 +772,9 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    marked_pages {0};
 	std::atomic<bool>                        mark_on {true};
 	std::atomic<uint8_t>                     mark_arm {0};
+	std::array<std::atomic<uintptr_t>, 32>   collect_callers {};
+	std::array<std::atomic<uint64_t>, 32>    collect_caller_counts {};
+	std::atomic<uint64_t>                    collect_empty {0};
 	std::atomic<uint64_t>                    mark_promoted {0};
 	std::atomic<uint64_t>                    mark_refused {0};
 	std::atomic<uint64_t>                    mark_forgotten {0};
@@ -1141,6 +1168,21 @@ uint8_t PageManager::MarkArm() noexcept {
 	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingRmw) ? 4u : 0u));
 }
 
+void PageManager::NoteCollectCaller(uintptr_t caller) noexcept {
+	auto& impl = *m_impl;
+	for (size_t probe = 0; probe < impl.collect_callers.size(); probe++) {
+		const auto slot = (caller / 16 + probe) % impl.collect_callers.size();
+		auto       seen = impl.collect_callers[slot].load(std::memory_order_relaxed);
+		if (seen == 0 && impl.collect_callers[slot].compare_exchange_strong(seen, caller, std::memory_order_relaxed)) {
+			seen = caller;
+		}
+		if (seen == caller) {
+			impl.collect_caller_counts[slot].fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+	}
+}
+
 void PageManager::ForgetAllWritten() {
 	auto&      impl  = *m_impl;
 	const auto count = impl.marked_region_count.load(std::memory_order_acquire);
@@ -1216,6 +1258,8 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 	}
 	if (pages != 0) {
 		impl.mark_collected.fetch_add(pages, std::memory_order_relaxed);
+	} else if (!scoped) {
+		impl.collect_empty.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
