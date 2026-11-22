@@ -930,56 +930,6 @@ fn a_short_store_without_a_free_window_keeps_the_fault() {
 }
 
 #[test]
-fn short_stores_go_back_to_their_bytes_while_the_switch_is_off() {
-    let (world, _guard) = world();
-    let short = [0x48u8, 0x89, 0x07];
-    let after = [0xC3u8, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00];
-    let checked = check_at(world, &short, Some(&after), 0x1B00);
-    assert_eq!(checked.refused, 0);
-    let site = checked.site;
-    let jump = code_at(site, 3);
-    let page = world.primary + 0x1B80 * 4 * PAGE;
-    let write = |value: u64, expect_faults: u64, expect_card: bool, through_alias: bool| {
-        let mut regs = seed(0x8D5);
-        regs.gpr[7] = page + 0x40;
-        regs.gpr[0] = value;
-        let want = regs;
-        let faults = FAULTS.load(Ordering::SeqCst);
-        call(site, &mut regs);
-        assert_eq!(FAULTS.load(Ordering::SeqCst), faults + expect_faults, "value {value:x}");
-        assert!(regs == want, "value {value:x}");
-        let at = if through_alias { world.alias + (page - world.primary) + 0x40 } else { page + 0x40 };
-        assert_eq!(unsafe { core::ptr::read_volatile(at as *const u64) }, value);
-        assert_eq!(!taken(page, page + PAGE).is_empty(), expect_card, "value {value:x}");
-    };
-    protect(page, false);
-    write(1, 1, true, true);
-    write(2, 0, true, true);
-    unsafe { sites::set_short(false) };
-    assert_eq!(code_at(site, 11), [&short[..], &after[..]].concat(), "the original store is back");
-    LAST_REFUSAL.store(0, Ordering::SeqCst);
-    cards::arm(page, 0);
-    write(3, 1, false, false);
-    assert_eq!(LAST_REFUSAL.load(Ordering::SeqCst), Refusal::Short as u64);
-    protect(page, false);
-    write(4, 1, false, false);
-    let fresh = check_at(world, &short, Some(&after), 0x1B01);
-    assert_eq!(fresh.refused, Refusal::Short as u64, "no short store is corrected while the switch is off");
-    let long = check(world, &[0x48, 0x89, 0x87, 0x00, 0x01, 0x00, 0x00], 0x1B02);
-    assert_eq!(long.refused, 0, "long stores are still corrected");
-    unsafe { sites::set_short(true) };
-    assert_eq!(code_at(site, 3), jump, "the jump is back");
-    assert_eq!(code_at(site + 3, 8), after);
-    protect(page, false);
-    write(5, 1, true, true);
-    write(6, 0, true, true);
-    let again = check_site(world, &short, &decode::decode(&short).unwrap(), stub_before(world, &short, &after), fresh.site, true, 0x1B03);
-    assert_eq!(again.refused, 0, "a site refused while the switch was off is corrected afterwards");
-    cards::arm(page, 0);
-    protect(page, true);
-}
-
-#[test]
 fn writes_across_two_pages() {
     let (world, _guard) = world();
     let delta = world.alias.wrapping_sub(world.primary) as i64;
@@ -1164,7 +1114,7 @@ fn card_runs() {
     assert!(!cards::arm(base, 100));
 }
 
-fn corrected_under_threads(world: &World, bytes: &'static [u8], after: &[u8], first_page: u64, rounds: u64, toggles: bool) {
+fn corrected_under_threads(world: &World, bytes: &'static [u8], after: &[u8], first_page: u64, rounds: u64) {
     let delta = world.alias.wrapping_sub(world.primary) as i64;
     let store = decode::decode(bytes).unwrap();
     for round in 0..rounds {
@@ -1201,22 +1151,6 @@ fn corrected_under_threads(world: &World, bytes: &'static [u8], after: &[u8], fi
             assert!(std::time::Instant::now() < deadline, "the site was never corrected");
             std::thread::yield_now();
         }
-        if toggles {
-            for _ in 0..6 {
-                std::thread::sleep(std::time::Duration::from_micros(300));
-                unsafe { sites::set_short(false) };
-                assert_eq!(code_at(code, store.len as usize), &bytes[..store.len as usize]);
-                std::thread::sleep(std::time::Duration::from_micros(300));
-                unsafe { sites::set_short(true) };
-                assert!(holds_jump(code));
-                protect(page, false);
-            }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while cards::armed(page) == 0 {
-                assert!(std::time::Instant::now() < deadline, "the page was never armed again");
-                std::thread::yield_now();
-            }
-        }
         std::thread::sleep(std::time::Duration::from_millis(2));
         stop.store(true, Ordering::Relaxed);
         for thread in threads {
@@ -1236,26 +1170,16 @@ fn corrected_under_threads(world: &World, bytes: &'static [u8], after: &[u8], fi
 #[test]
 fn sites_are_corrected_under_running_threads() {
     let (world, _guard) = world();
-    corrected_under_threads(world, &[0x48, 0x89, 0x07, 0xC3], &[0xC3, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00], 0x8100, 0, false);
     let tail = [0xC3u8, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90];
-    let long: &'static [u8] = &[0x48, 0x89, 0x47, 0x00, 0x90, 0x90, 0x90];
-    let _ = long;
-    corrected_under_threads(world, &[0x48, 0x89, 0x87, 0x00, 0x00, 0x00, 0x00], &tail, 0x8000, 24, false);
+    corrected_under_threads(world, &[0x48, 0x89, 0x87, 0x00, 0x00, 0x00, 0x00], &tail, 0x8000, 24);
 }
 
 #[test]
 fn short_sites_are_corrected_under_running_threads() {
     let (world, _guard) = world();
     let tail = [0xC3u8, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00];
-    corrected_under_threads(world, &[0x48, 0x89, 0x07], &tail, 0x8800, 24, false);
-    corrected_under_threads(world, &[0x89, 0x07], &[0xC3, 0x48, 0x8D, 0x47, 0x30, 0x00, 0x00, 0x00], 0x8900, 12, false);
-}
-
-#[test]
-fn short_sites_switch_off_and_on_under_running_threads() {
-    let (world, _guard) = world();
-    let tail = [0xC3u8, 0x2E, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00];
-    corrected_under_threads(world, &[0x48, 0x89, 0x07], &tail, 0x8A00, 8, true);
+    corrected_under_threads(world, &[0x48, 0x89, 0x07], &tail, 0x8800, 24);
+    corrected_under_threads(world, &[0x89, 0x07], &[0xC3, 0x48, 0x8D, 0x47, 0x30, 0x00, 0x00, 0x00], 0x8900, 12);
 }
 
 struct Random(u64);

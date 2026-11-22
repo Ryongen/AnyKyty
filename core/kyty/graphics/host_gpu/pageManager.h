@@ -48,7 +48,6 @@ public:
 	[[nodiscard]] bool MarkWritten(uint64_t vaddr);
 	void               UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, uint8_t cause = 0);
 	[[nodiscard]] uint32_t MarkState(uint64_t vaddr);
-	void               ForgetAllWritten();
 	[[nodiscard]] bool HasMarkedPages() const noexcept;
 	void               CollectMarkedWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
 

@@ -3,7 +3,6 @@ use crate::decode::{Form, Plain, Refusal, Store};
 pub const SLOT: usize = 384;
 pub const SITE_AT: usize = 368;
 pub const SLOW_AT: usize = 376;
-pub const PATCHED_AT: usize = 380;
 const CODE_ROOM: usize = SITE_AT;
 pub const LEAST_DELTA: u32 = 0x1000;
 

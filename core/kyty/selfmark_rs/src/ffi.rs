@@ -19,7 +19,6 @@ pub struct KytySelfMarkStats {
     pub breaks: u64,
     pub punned: u64,
     pub ahead: u64,
-    pub short_off: u64,
     pub hop_regions: u64,
     pub refusals: [u64; REFUSAL_COUNT],
     pub notes: [u64; NOTES],
@@ -73,16 +72,6 @@ pub extern "C" fn kyty_selfmark_site(entry: u64) -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn kyty_selfmark_service() {
     sites::service()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn kyty_selfmark_set_short(on: bool) {
-    sites::set_short(on)
-}
-
-#[no_mangle]
-pub extern "C" fn kyty_selfmark_short() -> bool {
-    sites::short_on()
 }
 
 #[no_mangle]
@@ -149,7 +138,6 @@ pub unsafe extern "C" fn kyty_selfmark_stats(stats: *mut KytySelfMarkStats) {
     stats.breaks = sites::BREAKS.load(Ordering::Relaxed);
     stats.punned = sites::PUNNED.load(Ordering::Relaxed);
     stats.ahead = sites::AHEAD.load(Ordering::Relaxed);
-    stats.short_off = sites::SHORT_OFF.load(Ordering::Relaxed);
     stats.hop_regions = sites::hop_regions();
     for (slot, counter) in stats.notes.iter_mut().zip(sites::NOTED.iter()) {
         *slot = counter.load(Ordering::Relaxed);

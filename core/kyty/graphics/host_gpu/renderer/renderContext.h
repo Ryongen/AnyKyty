@@ -87,7 +87,6 @@ public:
 	[[nodiscard]] bool MarkWritten(uint64_t vaddr) { return m_page_manager.MarkWritten(vaddr); }
 	void               UnmarkWritten(uint64_t vaddr, uint64_t size, PageManager::MarkLeave leave, uint8_t cause = 0) { m_page_manager.UnmarkWritten(vaddr, size, leave, cause); }
 	[[nodiscard]] uint32_t MarkState(uint64_t vaddr) { return m_page_manager.MarkState(vaddr); }
-	void               ForgetAllWritten() { m_page_manager.ForgetAllWritten(); }
 	[[nodiscard]] bool InvalidateMemory(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool InvalidateMemoryForWrite(uint64_t vaddr, uint64_t size);
 	void               MappedRanges(uint64_t vaddr, uint64_t size, RangeSet& out) const;

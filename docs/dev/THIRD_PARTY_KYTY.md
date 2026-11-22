@@ -405,20 +405,28 @@ time spent waiting for them. Its switch, `KYTY_WRITE_FAULT_FAST_PATH`, was remov
 title: equal frame rate (139.15 against 139.27 img/s), contended acquisitions 307 against 551 every 10 s.
 
 Self-marking guest writes (Linux by default, `-DANYPS5_KYTY_SELF_MARKING`): a guest instruction that takes a write fault on a
-watched page is replaced by a jump to a trampoline when it is a plain store of 5 bytes or more (`mov`, SSE and AVX moves to
-memory). From then on it writes through the second view of guest memory and sets a card for its page, which stays
-write-protected in the guest's view; the cards are collected where the driver synchronises with guest memory (start of a
-submission, a wait on guest memory that passes, before a GPU write) and delivered to the caches as a write fault would be.
-The first patched write on a page marks the clean pages of its 64 KiB block; a write the patcher cannot serve (an instruction
-shorter than a jump, a read-modify-write, host code) gives the whole block back to plain faults for good, and the patched
-sites then run their original instruction there. A site is patched while other threads run it: `int3` on its first byte, then
-the tail, then the jump opcode, each step followed by `membarrier` with `MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE`; a
-thread that meets the `int3` waits and resumes at the site. `[kyty-selfmark]` sums up every 10 s the sites patched and
-refused, the pages marked, promoted and given back, the page writes collected from cards and the time it took. Its switch,
-`KYTY_SELF_MARKING_WRITES`, was removed after in-run A/Bs on three titles: equal frame rates (12.90 against 12.92 img/s on a
-PS5-native title, 73.7 against 73.2 on a Unity title, 49.2 against 49.0 on an Unreal title), write faults per frame 2 637
-against 2 739 on the first. About half of its faults come from stores shorter than a jump, which share their pages with the
-patched ones, so most pages keep their faults until those sites are served too.
+watched page is replaced by a jump to a trampoline when it is a plain store (`mov`, SSE and AVX moves to memory). From then
+on it writes through the second view of guest memory and sets a card for its page, which stays write-protected in the
+guest's view; the cards are collected where the driver synchronises with guest memory (start of a submission, a wait on
+guest memory that passes, before a GPU write) and delivered to the caches as a write fault would be. A store of 5 bytes or
+more holds the jump itself, behind up to three `cs` prefixes. A store of 2 to 4 bytes gets a jump whose last bytes are the
+first bytes of the next instruction, which are never written: those bytes impose where the jump lands, and a five byte relay
+mapped at that address goes on to the trampoline. Only the bytes of the store change, so a thread or a branch that enters
+the next instruction finds it as it was. Stores that follow a short one are patched first, the bytes a jump borrows are
+never patched afterwards, and a short store whose every landing address is taken keeps its fault.
+The first patched write on a page marks the clean pages of its 64 KiB block; a write the patcher cannot serve (a
+read-modify-write, a store without a landing address, host code) gives the whole block back to plain faults for good, and
+the patched sites then run their original instruction there. A site is patched while other threads run it: `int3` on its
+first byte, then the tail, then the first byte of the jump, each step followed by `membarrier` with
+`MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE`; a thread that meets the `int3` waits and resumes at the site.
+`[kyty-selfmark]` sums up every 10 s the sites patched and refused, the pages marked, promoted and given back, the page
+writes collected from cards, and the write faults by kind of writer and by state of the page;
+`[kyty-selfmark-owners]` crosses the owner of each faulting page with its writer. Its switches were removed after their
+in-run A/Bs. `KYTY_SELF_MARKING_WRITES`, stores of 5 bytes or more: equal frame rates on three titles, write faults per
+frame 2 637 against 2 739 on a PS5-native one. `KYTY_SELF_MARKING_SHORT`, shorter stores too: write faults per frame 1 923
+against 2 465 on that title (13.94 against 13.60 img/s), 49.9 against 49.5 img/s on an Unreal title and 133 against 136 on
+a Unity title whose phases spread by 5. What still faults on the first title is mostly pages of command buffers, which
+the driver's own command library writes too, and blocks the GPU writes in.
 
 Stencil fills: a buffer fill of a stencil plane becomes a clear of the depth image's stencil aspect only while that aspect
 holds the plane; a fill of another plane runs as the game's own fill, so it no longer wipes the plane the depth image holds.

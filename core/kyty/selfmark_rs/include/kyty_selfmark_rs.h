@@ -24,7 +24,6 @@ enum {
 };
 
 enum {
-	KYTY_SELFMARK_REFUSAL_SHORT           = 1,
 	KYTY_SELFMARK_REFUSAL_NOT_STORE       = 2,
 	KYTY_SELFMARK_REFUSAL_RIP_RELATIVE    = 3,
 	KYTY_SELFMARK_REFUSAL_STACK_BASE      = 4,
@@ -47,7 +46,6 @@ enum {
 enum {
 	KYTY_SELFMARK_NOTE_SERVED           = 0,
 	KYTY_SELFMARK_NOTE_PATCHED_UNARMED  = 1,
-	KYTY_SELFMARK_NOTE_GUEST_SHORT      = 2,
 	KYTY_SELFMARK_NOTE_GUEST_NOT_STORE  = 3,
 	KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW  = 4,
 	KYTY_SELFMARK_NOTE_GUEST_FROZEN     = 5,
@@ -99,7 +97,6 @@ typedef struct KytySelfMarkStats {
 	uint64_t breaks;
 	uint64_t punned;
 	uint64_t ahead;
-	uint64_t short_off;
 	uint64_t hop_regions;
 	uint64_t refusals[KYTY_SELFMARK_REFUSALS];
 	uint64_t notes[KYTY_SELFMARK_NOTES];
@@ -117,8 +114,6 @@ KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);
 uint64_t          kyty_selfmark_target(uint64_t entry, const uint64_t* registers);
 uint64_t          kyty_selfmark_site(uint64_t entry);
 void              kyty_selfmark_service(void);
-void              kyty_selfmark_set_short(bool on);
-bool              kyty_selfmark_short(void);
 void              kyty_selfmark_note(uint32_t kind);
 void              kyty_selfmark_set_writer(uint32_t kind);
 void              kyty_selfmark_note_owner(uint32_t owner);

@@ -293,7 +293,6 @@ std::uint32_t WriterKind(const KytySelfMarkFault& fault, std::uint64_t rip) {
         case KYTY_SELFMARK_BUSY: return KYTY_SELFMARK_NOTE_GUEST_BUSY;
         case KYTY_SELFMARK_REFUSED:
             switch (fault.reason) {
-                case KYTY_SELFMARK_REFUSAL_SHORT: return KYTY_SELFMARK_NOTE_GUEST_SHORT;
                 case KYTY_SELFMARK_REFUSAL_NOT_STORE: return KYTY_SELFMARK_NOTE_GUEST_NOT_STORE;
                 case KYTY_SELFMARK_REFUSAL_NO_WINDOW: return KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW;
                 case KYTY_SELFMARK_REFUSAL_FROZEN: return KYTY_SELFMARK_NOTE_GUEST_FROZEN;

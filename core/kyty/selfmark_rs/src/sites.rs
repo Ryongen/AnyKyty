@@ -1,6 +1,6 @@
 use crate::cards;
 use crate::decode::{self, Refusal, MAX_LEN, REFUSAL_COUNT};
-use crate::emit::{self, Tables, PATCHED_AT, SLOT, SLOW_AT};
+use crate::emit::{self, Tables, SLOT, SLOW_AT};
 use crate::os;
 use crate::pun::{self, Window, JUMP_LEN};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -37,7 +37,6 @@ const SPOT_STEP: u64 = 8;
 const ADDRESS_BITS: u64 = 48;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static SHORT: AtomicBool = AtomicBool::new(true);
 static LOCK: AtomicBool = AtomicBool::new(false);
 static PATCHING: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR: AtomicUsize = AtomicUsize::new(0);
@@ -60,7 +59,6 @@ static WANTED: AtomicU64 = AtomicU64::new(0);
 pub static PATCHED: AtomicU64 = AtomicU64::new(0);
 pub static PUNNED: AtomicU64 = AtomicU64::new(0);
 pub static AHEAD: AtomicU64 = AtomicU64::new(0);
-pub static SHORT_OFF: AtomicU64 = AtomicU64::new(0);
 pub static REFUSALS: [AtomicU64; REFUSAL_COUNT] = [const { AtomicU64::new(0) }; REFUSAL_COUNT];
 pub static BUSY: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_FAULTS: AtomicU64 = AtomicU64::new(0);
@@ -80,10 +78,6 @@ pub fn set_enabled(on: bool) {
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
-}
-
-pub fn short_on() -> bool {
-    SHORT.load(Ordering::Acquire)
 }
 
 pub fn hop_regions() -> u64 {
@@ -443,9 +437,6 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
     };
     let length = store.len as usize;
     let short = store.short();
-    if short && !short_on() {
-        return refuse(site, Refusal::Short);
-    }
     if frozen(site, length as u64) {
         return refuse(site, Refusal::Frozen);
     }
@@ -505,7 +496,7 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
     let Some((arena, index, entry)) = slot else {
         return refuse(site, Refusal::NoWindow);
     };
-    let mut built = match emit::build(&store, &original[..length], site, entry, &tables) {
+    let built = match emit::build(&store, &original[..length], site, entry, &tables) {
         Ok(built) => built,
         Err(refusal) => return refuse(site, refusal),
     };
@@ -517,7 +508,6 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
         };
         bytes[..4].copy_from_slice(&punned);
         relay = jump;
-        built.bytes[PATCHED_AT..PATCHED_AT + 4].copy_from_slice(&punned);
     } else {
         let Some(jump) = pun::long(site, length, pads, entry) else {
             return refuse(site, Refusal::OutOfReach);
@@ -558,7 +548,7 @@ unsafe fn patch(site: u64, alloc: bool) -> (u32, u64) {
     let mut chain = [0u64; CHAIN];
     let mut count = 1;
     chain[0] = site;
-    if short_on() && !settled(site) && is_guest(site) {
+    if !settled(site) && is_guest(site) {
         let mut cursor = site;
         while count < CHAIN {
             let Ok(store) = decode::decode_at(cursor as *const u8) else {
@@ -604,33 +594,6 @@ pub unsafe fn service() {
     LOCK.store(false, Ordering::Release);
 }
 
-pub unsafe fn set_short(on: bool) {
-    while LOCK.swap(true, Ordering::Acquire) {
-        os::relax();
-    }
-    if SHORT.swap(on, Ordering::AcqRel) != on {
-        if on {
-            for value in SITE_VALUES.iter() {
-                let _ = value.compare_exchange(REFUSED | Refusal::Short as u64, 0, Ordering::AcqRel, Ordering::Relaxed);
-            }
-        }
-        let count = PUN_COUNT.load(Ordering::Acquire);
-        for step in 0..count {
-            let pun = if on { step } else { count - 1 - step };
-            let (site, length, _) = pun_fields(PUN_SITE[pun].load(Ordering::Acquire));
-            let entry = site_get(site);
-            if entry == 0 || entry & REFUSED != 0 {
-                continue;
-            }
-            let mut bytes = [0u8; 4];
-            let from = if on { entry + PATCHED_AT as u64 } else { entry + (core::ptr::read((entry + SLOW_AT as u64) as *const u64) & 0xFFFF) };
-            core::ptr::copy_nonoverlapping(from as *const u8, bytes.as_mut_ptr(), length);
-            rewrite(site, length, &bytes);
-        }
-    }
-    LOCK.store(false, Ordering::Release);
-}
-
 pub unsafe fn lookup(address: u64) -> (u32, u64) {
     if let Some((entry, slow)) = trampoline_of(address) {
         if slow {
@@ -649,10 +612,6 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
         }
         if PATCHING.load(Ordering::SeqCst) == address {
             return (OUTCOME_BUSY, 0);
-        }
-        if !short_on() && (length_of(known) as usize) < JUMP_LEN {
-            SHORT_OFF.fetch_add(1, Ordering::Relaxed);
-            return (OUTCOME_REFUSED, Refusal::Short as u64);
         }
     }
     (OUTCOME_NONE, 0)

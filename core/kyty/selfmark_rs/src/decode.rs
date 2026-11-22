@@ -4,7 +4,6 @@ pub const PATCH_LEN: usize = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Refusal {
-    Short = 1,
     NotStore = 2,
     RipRelative = 3,
     StackBase = 4,
