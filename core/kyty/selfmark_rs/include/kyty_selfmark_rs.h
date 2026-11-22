@@ -110,6 +110,7 @@ uint64_t          kyty_selfmark_breakpoint(uint64_t address);
 bool              kyty_selfmark_table_fault(uint64_t address);
 bool              kyty_selfmark_arm(uint64_t address, int64_t delta);
 int64_t           kyty_selfmark_armed(uint64_t address);
+const uint8_t*    kyty_selfmark_cards(void);
 bool              kyty_selfmark_mark(uint64_t address);
 size_t            kyty_selfmark_take(uint64_t begin, uint64_t end, uint64_t* runs, size_t capacity, uint64_t* next);
 bool              kyty_selfmark_any(uint64_t begin, uint64_t end);

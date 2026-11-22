@@ -488,6 +488,25 @@ struct PageManager::Impl {
 		flush();
 	}
 
+	[[nodiscard]] bool LineWritten(uint64_t line_begin) noexcept {
+#if defined(KYTY_SELF_MARKING) && KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+		auto* cards = mark_cards.load(std::memory_order_relaxed);
+		if (cards == nullptr) {
+			cards = kyty_selfmark_cards();
+			mark_cards.store(cards, std::memory_order_relaxed);
+		}
+		const auto* words = reinterpret_cast<const std::atomic<uint64_t>*>(cards + line_begin / PAGE_SIZE);
+		uint64_t    any   = 0;
+		for (size_t word = 0; word < MARK_LINE_PAGES / 8; word++) {
+			any |= words[word].load(std::memory_order_relaxed);
+		}
+		return any != 0;
+#else
+		(void)line_begin;
+		return true;
+#endif
+	}
+
 	template <typename Func>
 	void TakeMarked(uint64_t begin, uint64_t end, Func&& func) noexcept {
 #if defined(KYTY_SELF_MARKING)
@@ -710,6 +729,7 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    mark_slow_seen {0};
 	std::atomic<uint64_t>                    mark_patched_seen {0};
 	std::atomic<uint64_t>                    mark_refusals_seen {0};
+	std::atomic<const uint8_t*>              mark_cards {nullptr};
 	std::array<std::atomic<uint64_t>, 256>   mark_notes_seen {};
 
 	std::mutex                                  hot_mutex;
@@ -1121,12 +1141,11 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 				impl.TakeMarked(base, base + REGION_SIZE, deliver);
 				continue;
 			}
-			for (uint32_t mask = impl.marked_masks[slot].load(std::memory_order_acquire); mask != 0;) {
-				const auto first = static_cast<uint32_t>(std::countr_zero(mask));
-				const auto run   = static_cast<uint32_t>(std::countr_one(mask >> first));
-				const auto begin = base + uint64_t {first} * MARK_LINE_PAGES * PAGE_SIZE;
-				impl.TakeMarked(begin, begin + uint64_t {run} * MARK_LINE_PAGES * PAGE_SIZE, deliver);
-				mask &= ~(((1u << run) - 1u) << first);
+			for (uint32_t mask = impl.marked_masks[slot].load(std::memory_order_acquire); mask != 0; mask &= mask - 1u) {
+				const auto begin = base + uint64_t {static_cast<uint32_t>(std::countr_zero(mask))} * MARK_LINE_PAGES * PAGE_SIZE;
+				if (impl.LineWritten(begin)) {
+					impl.TakeMarked(begin, begin + MARK_LINE_PAGES * PAGE_SIZE, deliver);
+				}
 			}
 		}
 		const auto scans = impl.mark_scans.fetch_add(1, std::memory_order_relaxed);

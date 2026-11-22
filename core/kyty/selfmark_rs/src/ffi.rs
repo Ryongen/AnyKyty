@@ -115,6 +115,11 @@ pub extern "C" fn kyty_selfmark_armed(address: u64) -> i64 {
 }
 
 #[no_mangle]
+pub extern "C" fn kyty_selfmark_cards() -> *const u8 {
+    cards::card_base() as *const u8
+}
+
+#[no_mangle]
 pub extern "C" fn kyty_selfmark_mark(address: u64) -> bool {
     cards::mark(address)
 }
