@@ -14,15 +14,17 @@ void PatchBranchTarget(std::uint32_t* cmd, std::uint32_t field, const volatile s
     const auto address = reinterpret_cast<std::uintptr_t>(target);
     Agc::Command::CheckAddress(address, 4, function);
     Agc::Command::CheckBits(sizeInDwords, 0xfffffu, function);
-    cmd[field] = static_cast<std::uint32_t>(address);
-    cmd[field + 1u] = static_cast<std::uint32_t>(address >> 32u);
-    cmd[field + 2u] = (cmd[field + 2u] & ~0xfffffu) | sizeInDwords;
+    const Agc::Command::Words words(cmd, field + 3u);
+    words[field] = static_cast<std::uint32_t>(address);
+    words[field + 1u] = static_cast<std::uint32_t>(address >> 32u);
+    words[field + 2u] = (words[field + 2u] & ~0xfffffu) | sizeInDwords;
 }
 
 void PatchBranchTarget(std::uint32_t* cmd, std::uint32_t field, std::uint8_t cachePolicy, const volatile std::uint32_t* target, std::uint32_t sizeInDwords, const char* function) {
     Agc::Command::CheckBits(cachePolicy, 3, function);
     PatchBranchTarget(cmd, field, target, sizeInDwords, function);
-    cmd[field + 2u] = (cmd[field + 2u] & ~(3u << 28u)) | (static_cast<std::uint32_t>(cachePolicy) << 28u);
+    const Agc::Command::Words words(cmd, field + 3u);
+    words[field + 2u] = (words[field + 2u] & ~(3u << 28u)) | (static_cast<std::uint32_t>(cachePolicy) << 28u);
 }
 
 }
@@ -33,8 +35,9 @@ int APS5_VABI sceAgcBranchPatchSetCompareAddress(std::uint32_t* cmd, const volat
     Agc::Command::ValidatePacket(cmd, 0x3fu, 14, __func__);
     const auto address = reinterpret_cast<std::uintptr_t>(compareAddress);
     Agc::Command::CheckAddress(address, 8, __func__);
-    cmd[2] = static_cast<std::uint32_t>(address);
-    cmd[3] = static_cast<std::uint32_t>(address >> 32u);
+    const Agc::Command::Words words(cmd, 4);
+    words[2] = static_cast<std::uint32_t>(address);
+    words[3] = static_cast<std::uint32_t>(address >> 32u);
     return 0;
 }
 

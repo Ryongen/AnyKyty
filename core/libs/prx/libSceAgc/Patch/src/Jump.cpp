@@ -14,9 +14,10 @@ void PatchJump(std::uint32_t* cmd, const volatile std::uint32_t* target, std::ui
     const auto address = reinterpret_cast<std::uintptr_t>(target);
     Agc::Command::CheckAddress(address, 4, function);
     Agc::Command::CheckBits(sizeInDwords, 0xfffffu, function);
-    cmd[1] = static_cast<std::uint32_t>(address);
-    cmd[2] = static_cast<std::uint32_t>(address >> 32u);
-    cmd[3] = (cmd[3] & ~0xfffffu) | sizeInDwords;
+    const Agc::Command::Words words(cmd, 4);
+    words[1] = static_cast<std::uint32_t>(address);
+    words[2] = static_cast<std::uint32_t>(address >> 32u);
+    words[3] = (words[3] & ~0xfffffu) | sizeInDwords;
 }
 
 }
@@ -31,7 +32,8 @@ int APS5_VABI sceAgcJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* t
 int APS5_VABI sceAgcJumpPatchSetTarget_0300(uint32_t* cmd, uint64_t cache_policy, const volatile uint32_t* target, uint32_t size_in_dwords) {
     Agc::Command::CheckBits(cache_policy, 3u, __func__);
     PatchJump(cmd, target, size_in_dwords, __func__);
-    cmd[3] = (cmd[3] & ~(3u << 28u)) | (static_cast<std::uint32_t>(cache_policy) << 28u);
+    const Agc::Command::Words words(cmd, 4);
+    words[3] = (words[3] & ~(3u << 28u)) | (static_cast<std::uint32_t>(cache_policy) << 28u);
     return 0;
 }
 

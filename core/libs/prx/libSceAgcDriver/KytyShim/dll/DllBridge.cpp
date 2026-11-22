@@ -328,7 +328,7 @@ const KytyDllApi* MakeApi() {
         table.check_guest_memory = [](const void* pointer, std::size_t bytes, std::size_t alignment, bool writable) { return Guard([&] { AgcDriver::GuestMemory::CheckRange(pointer, bytes, alignment, writable); }); };
         table.display_buffer_size = [](const KytyDllDisplayBuffer* buffer, std::size_t* bytes) { return Guard([&] { *bytes = AgcDriver::DisplayBufferSize(ToBuffer(*buffer)); }); };
         table.static_table = [](void** pointer) { return Guard([&] { *pointer = AgcDriverStaticTable_nid_postfix(); }); };
-        table.prepare_command_write = [](std::uint64_t address, std::size_t bytes) { return Guard([&] { AgcDriverPrepareCommandWrite_nid_no_patch(address, bytes); }); };
+        table.prepare_command_write = [](std::uint64_t address, std::size_t bytes) { return Guard([&] { static_cast<void>(AgcDriverPrepareCommandWrite_nid_no_patch(address, bytes)); }); };
         table.note_command_segment = [](std::uint64_t address, std::size_t bytes) { return Guard([&] { AgcDriverNoteCommandSegment_nid_no_patch(address, bytes); }); };
         table.store_guest_label = [](std::uint64_t* pointer, std::uint64_t value) { return Guard([&] { AgcDriverStoreGuestLabel_nid_postfix(pointer, value); }); };
         table.lock_vulkan_loader = [] { return Guard([] { AgcDriverLockVulkanLoader_nid_postfix(); }); };

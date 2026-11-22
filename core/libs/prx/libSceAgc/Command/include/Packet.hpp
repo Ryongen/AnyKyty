@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGC_COMMAND_INCLUDE_PACKET_HPP
 #define CORE_LIBS_PRX_LIBSCEAGC_COMMAND_INCLUDE_PACKET_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include "SceTypes.hpp"
@@ -11,8 +12,27 @@ void Require(bool condition, const char* function, const char* reason);
 void CheckBits(std::uint64_t value, std::uint64_t mask, const char* function);
 void CheckAddress(std::uint64_t address, std::uint32_t alignment, const char* function);
 std::uint32_t Header(std::uint32_t opcode, std::uint32_t count, std::uint32_t flags = 0);
+class Words {
+public:
+    Words(std::uint32_t* address, std::uint32_t count);
+    ~Words();
+    Words(Words&& other) noexcept;
+    Words(const Words&) = delete;
+    Words& operator=(const Words&) = delete;
+    Words& operator=(Words&&) = delete;
+
+    std::uint32_t& operator[](std::size_t index) const noexcept { return view[index]; }
+    [[nodiscard]] std::uint32_t* at(std::size_t index) const noexcept { return view + index; }
+    [[nodiscard]] std::uint32_t* guest() const noexcept { return address; }
+
+private:
+    std::uint32_t* address;
+    std::uint32_t* view;
+    std::uint32_t count;
+};
+
 void Reserve(CommandBuffer* buffer, std::uint32_t count, const char* function);
-std::uint32_t* Allocate(CommandBuffer* buffer, std::uint32_t count, const char* function);
+[[nodiscard]] Words Allocate(CommandBuffer* buffer, std::uint32_t count, const char* function);
 std::uint32_t* Emit(CommandBuffer* buffer, std::uint32_t opcode, std::initializer_list<std::uint32_t> payload, const char* function);
 void ValidatePacket(const std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function);
 std::uint32_t* WriteNop(CommandBuffer* buffer, std::uint32_t count, const char* function);

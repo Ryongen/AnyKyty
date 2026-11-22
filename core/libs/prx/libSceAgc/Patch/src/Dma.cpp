@@ -11,15 +11,17 @@ extern "C" {
 
 int APS5_VABI sceAgcDmaDataPatchSetDstAddressOrOffset(std::uint32_t* cmd, std::uint64_t address) {
     Agc::Command::ValidatePacket(cmd, 0x50u, 7, __func__);
-    cmd[4] = static_cast<std::uint32_t>(address);
-    cmd[5] = static_cast<std::uint32_t>(address >> 32u);
+    const Agc::Command::Words words(cmd, 6);
+    words[4] = static_cast<std::uint32_t>(address);
+    words[5] = static_cast<std::uint32_t>(address >> 32u);
     return 0;
 }
 
 int APS5_VABI sceAgcDmaDataPatchSetSrcAddressOrOffsetOrImmediate(std::uint32_t* cmd, std::uint64_t address) {
     Agc::Command::ValidatePacket(cmd, 0x50u, 7, __func__);
-    cmd[2] = static_cast<std::uint32_t>(address);
-    cmd[3] = static_cast<std::uint32_t>(address >> 32u);
+    const Agc::Command::Words words(cmd, 4);
+    words[2] = static_cast<std::uint32_t>(address);
+    words[3] = static_cast<std::uint32_t>(address >> 32u);
     return 0;
 }
 

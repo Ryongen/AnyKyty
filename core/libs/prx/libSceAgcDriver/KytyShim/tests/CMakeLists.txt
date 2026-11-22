@@ -171,7 +171,8 @@ if(ANYPS5_KYTY_SELF_MARKING AND NOT ANYPS5_KYTY_DLL AND CMAKE_SYSTEM_NAME STREQU
     target_sources(libSceAgcDriver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/SelfMarkingWrites.cpp)
     add_test_executable(kyty_shim_self_marking_writes_tests ${CMAKE_CURRENT_SOURCE_DIR}/SelfMarkingWritesMain.cpp)
     configure_host_test_executable(kyty_shim_self_marking_writes_tests)
-    target_link_libraries(kyty_shim_self_marking_writes_tests PRIVATE libSceAgcDriver libkernel libc)
+    target_include_directories(kyty_shim_self_marking_writes_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(kyty_shim_self_marking_writes_tests PRIVATE libSceAgc libSceAgcDriver libkernel libc)
     add_test(NAME kyty_shim_self_marking_writes COMMAND kyty_shim_self_marking_writes_tests)
     set_tests_properties(kyty_shim_self_marking_writes PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
             ENVIRONMENT "KYTY_GPU_PIPELINE=0"

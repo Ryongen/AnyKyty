@@ -653,9 +653,12 @@ extern "C" void* AgcDriverStaticTable_nid_postfix() {
     return reinterpret_cast<void*>(KytyShim::Entry::FsTableAddress);
 }
 
-extern "C" void AgcDriverPrepareCommandWrite_nid_no_patch(std::uint64_t address, std::size_t bytes) {
-    static_cast<void>(address);
-    static_cast<void>(bytes);
+extern "C" std::uint64_t AgcDriverPrepareCommandWrite_nid_no_patch(std::uint64_t address, std::size_t bytes) {
+    return Libs::LibKernel::Memory::CommandWriteView(address, bytes);
+}
+
+extern "C" void AgcDriverFinishCommandWrite_nid_no_patch(std::uint64_t address, std::size_t bytes) noexcept {
+    Libs::LibKernel::Memory::FinishCommandWrite(address, bytes);
 }
 
 extern "C" void AgcDriverNoteCommandSegment_nid_no_patch(std::uint64_t address, std::size_t bytes) {

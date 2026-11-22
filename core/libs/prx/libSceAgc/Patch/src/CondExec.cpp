@@ -13,8 +13,9 @@ int SetCommandAddress(std::uint32_t* cmd, const volatile std::uint32_t* command,
     Agc::Command::ValidatePacket(cmd, 0x22u, 5, function);
     const auto address = reinterpret_cast<std::uintptr_t>(command);
     Agc::Command::CheckAddress(address, 4, function);
-    cmd[1] = (cmd[1] & 3u) | (static_cast<std::uint32_t>(address) & ~3u);
-    cmd[2] = static_cast<std::uint32_t>(address >> 32u);
+    const Agc::Command::Words words(cmd, 3);
+    words[1] = (words[1] & 3u) | (static_cast<std::uint32_t>(address) & ~3u);
+    words[2] = static_cast<std::uint32_t>(address >> 32u);
     return 0;
 }
 
@@ -25,7 +26,8 @@ int SetEnd(std::uint32_t* cmd, const volatile std::uint32_t* buffer, const char*
     Agc::Command::CheckAddress(end, 4, function);
     const auto numDwords = (end - packetEnd) / sizeof(std::uint32_t);
     Agc::Command::Require(numDwords <= 0x3fffu, function, "conditional execution range is too large");
-    cmd[4] = (cmd[4] & ~0x3fffu) | static_cast<std::uint32_t>(numDwords);
+    const Agc::Command::Words words(cmd, 5);
+    words[4] = (words[4] & ~0x3fffu) | static_cast<std::uint32_t>(numDwords);
     return 0;
 }
 

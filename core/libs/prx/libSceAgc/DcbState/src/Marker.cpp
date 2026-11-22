@@ -33,19 +33,19 @@ std::uint32_t* PushSpan(CommandBuffer* buf, const char* str, std::uint32_t lengt
     const std::size_t bytes = std::size_t{length} + 1;
     const auto payload = static_cast<std::uint32_t>((bytes + 3) / 4);
     Agc::Command::Require(payload <= 0x4000u, function, "marker text too long");
-    auto* packet = Agc::Command::Allocate(buf, payload + 1, function);
+    auto packet = Agc::Command::Allocate(buf, payload + 1, function);
     packet[0] = Agc::Command::Header(OpcodeNop, payload + 1, CustomPushMarker << 2);
-    std::memset(packet + 1, 0, payload * sizeof(std::uint32_t));
-    if (length != 0) std::memcpy(packet + 1, str, length);
-    return packet;
+    std::memset(packet.at(1), 0, payload * sizeof(std::uint32_t));
+    if (length != 0) std::memcpy(packet.at(1), str, length);
+    return packet.guest();
 }
 
 std::uint32_t* Pop(CommandBuffer* buf, const char* function) {
     Agc::Command::Require(buf != nullptr, function, "null command buffer");
-    auto* packet = Agc::Command::Allocate(buf, 2, function);
+    auto packet = Agc::Command::Allocate(buf, 2, function);
     packet[0] = Agc::Command::Header(OpcodeNop, 2, CustomPopMarker << 2);
     packet[1] = 0;
-    return packet;
+    return packet.guest();
 }
 
 }

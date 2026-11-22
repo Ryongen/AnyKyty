@@ -150,6 +150,22 @@ private:
 
 }
 
+Words::Words(std::uint32_t* address, std::uint32_t count)
+    : address(address),
+      view(reinterpret_cast<std::uint32_t*>(static_cast<std::uintptr_t>(
+          AgcDriverPrepareCommandWrite_nid_no_patch(reinterpret_cast<std::uint64_t>(address), static_cast<std::size_t>(count) * sizeof(std::uint32_t))))),
+      count(count) {}
+
+Words::Words(Words&& other) noexcept : address(other.address), view(other.view), count(other.count) {
+    other.view = other.address;
+}
+
+Words::~Words() {
+    if (view != address) {
+        AgcDriverFinishCommandWrite_nid_no_patch(reinterpret_cast<std::uint64_t>(address), static_cast<std::size_t>(count) * sizeof(std::uint32_t));
+    }
+}
+
 void Reserve(CommandBuffer* buffer, std::uint32_t count, const char* function) {
     Require(buffer != nullptr && count != 0, function, "null command buffer or empty allocation");
     if (available(*buffer, function) < count) {
@@ -160,7 +176,7 @@ void Reserve(CommandBuffer* buffer, std::uint32_t count, const char* function) {
     }
 }
 
-std::uint32_t* Allocate(CommandBuffer* buffer, std::uint32_t count, const char* function) {
+Words Allocate(CommandBuffer* buffer, std::uint32_t count, const char* function) {
     Require(buffer != nullptr && count != 0, function, "null command buffer or empty allocation");
     auto& stripe = allocationStripe(buffer);
     std::unique_lock serialized(stripe.mutex);
@@ -183,19 +199,19 @@ std::uint32_t* Allocate(CommandBuffer* buffer, std::uint32_t count, const char* 
 #if defined(ANYPS5_KYTY)
     NoteSegment(*buffer);
 #endif
-    AgcDriverPrepareCommandWrite_nid_no_patch(reinterpret_cast<std::uint64_t>(result), static_cast<std::size_t>(count) * sizeof(std::uint32_t));
+    Words words(result, count);
     buffer->cursor_up += count;
-    return result;
+    return words;
 }
 
 std::uint32_t* Emit(CommandBuffer* buffer, std::uint32_t opcode, std::initializer_list<std::uint32_t> payload, const char* function) {
     Require(payload.size() <= 0x4000u, function, "packet payload exceeds maximum size");
     const auto count = static_cast<std::uint32_t>(payload.size()) + 1u;
     const auto header = Header(opcode, count);
-    auto* packet = Allocate(buffer, count, function);
+    auto packet = Allocate(buffer, count, function);
     packet[0] = header;
-    std::copy(payload.begin(), payload.end(), packet + 1);
-    return packet;
+    std::copy(payload.begin(), payload.end(), packet.at(1));
+    return packet.guest();
 }
 
 void ValidatePacket(const std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function) {
@@ -205,10 +221,10 @@ void ValidatePacket(const std::uint32_t* packet, std::uint32_t opcode, std::uint
 
 std::uint32_t* WriteNop(CommandBuffer* buffer, std::uint32_t count, const char* function) {
     const auto header = count == 1 ? 0xffff1000u : Header(0x10u, count);
-    auto* packet = Allocate(buffer, count, function);
+    auto packet = Allocate(buffer, count, function);
     packet[0] = header;
-    std::fill_n(packet + 1, count - 1u, 0u);
-    return packet;
+    std::fill_n(packet.at(1), count - 1u, 0u);
+    return packet.guest();
 }
 
 std::uint32_t* WriteRegisterRange(CommandBuffer* buffer, std::uint32_t opcode, std::uint32_t offset, const std::uint32_t* values, std::uint32_t count, const char* function) {
@@ -218,11 +234,11 @@ std::uint32_t* WriteRegisterRange(CommandBuffer* buffer, std::uint32_t opcode, s
         snapshot.resize(count);
         std::memcpy(snapshot.data(), values, static_cast<std::size_t>(count) * sizeof(std::uint32_t));
     }
-    auto* packet = Allocate(buffer, count + 2u, function);
+    auto packet = Allocate(buffer, count + 2u, function);
     packet[0] = Header(opcode, count + 2u);
     packet[1] = offset;
-    std::copy(snapshot.begin(), snapshot.end(), packet + 2);
-    return packet;
+    std::copy(snapshot.begin(), snapshot.end(), packet.at(2));
+    return packet.guest();
 }
 
 std::uint32_t* WriteRegisters(CommandBuffer* buffer, std::uint32_t opcode, const volatile ShaderRegister* registers, std::uint32_t count, bool snapshotAll, const char* function) {
@@ -276,21 +292,24 @@ void PatchIndirectAddress(std::uint32_t* packet, std::uint32_t opcode, const vol
     Require(packet[3] == 0x80000000u && (packet[4] & ~0x3fffu) == 0, function, "invalid indirect register packet");
     const auto address = reinterpret_cast<std::uintptr_t>(registers);
     CheckAddress(address, 4, function);
-    packet[1] = static_cast<std::uint32_t>(address);
-    packet[2] = static_cast<std::uint32_t>(address >> 32u);
+    const Words words(packet, 3);
+    words[1] = static_cast<std::uint32_t>(address);
+    words[2] = static_cast<std::uint32_t>(address >> 32u);
 }
 
 void PatchIndirectCount(std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function) {
     ValidatePacket(packet, opcode, 5, function);
     Require(packet[3] == 0x80000000u && packet[4] <= 0x3fffu && count <= 0x3fffu - packet[4], function, "indirect register count overflow or invalid packet");
-    packet[4] += count;
+    const Words words(packet, 5);
+    words[4] += count;
 }
 
 void SetIndirectCount(std::uint32_t* packet, std::uint32_t opcode, std::uint32_t count, const char* function) {
     ValidatePacket(packet, opcode, 5, function);
     Require(packet[3] == 0x80000000u && packet[4] <= 0x3fffu, function, "invalid indirect register packet");
     CheckBits(count, 0x3fffu, function);
-    packet[4] = count;
+    const Words words(packet, 5);
+    words[4] = count;
 }
 
 }

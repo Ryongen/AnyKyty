@@ -22,12 +22,17 @@ bool StreamEnsure(CommandBuffer* buffer, std::uint32_t need) {
            StreamAvailable(buffer) >= need;
 }
 
-std::uint32_t* StreamTake(CommandBuffer* buffer, std::uint32_t count) {
+std::uint32_t* StreamWrite(CommandBuffer* buffer, std::initializer_list<std::uint32_t> dwords) {
+    const auto count = static_cast<std::uint32_t>(dwords.size());
     auto* packet = reinterpret_cast<std::uint32_t*>(
         (reinterpret_cast<std::uintptr_t>(buffer->cursor_up) + 3u) & ~static_cast<std::uintptr_t>(3u));
     buffer->cursor_up = packet + count;
     if (packet == nullptr) return nullptr;
-    AgcDriverPrepareCommandWrite_nid_no_patch(reinterpret_cast<std::uint64_t>(packet), count * sizeof(std::uint32_t));
+    const auto address = reinterpret_cast<std::uint64_t>(packet);
+    const auto bytes = static_cast<std::size_t>(count) * sizeof(std::uint32_t);
+    const auto view = AgcDriverPrepareCommandWrite_nid_no_patch(address, bytes);
+    std::copy(dwords.begin(), dwords.end(), reinterpret_cast<std::uint32_t*>(static_cast<std::uintptr_t>(view)));
+    if (view != address) AgcDriverFinishCommandWrite_nid_no_patch(address, bytes);
     return packet;
 }
 
@@ -46,18 +51,10 @@ std::uint32_t* APS5_VABI sceAgcVshUnknown_Aozdh0bCcO0(CommandBuffer* buffer) {
     if (buffer == nullptr) return nullptr;
     auto emit = [buffer](std::uint32_t need, std::initializer_list<std::uint32_t> dwords) {
         if (!StreamEnsure(buffer, need)) return;
-        auto* packet = StreamTake(buffer, static_cast<std::uint32_t>(dwords.size()));
-        if (packet != nullptr) std::copy(dwords.begin(), dwords.end(), packet);
+        static_cast<void>(StreamWrite(buffer, dwords));
     };
     if (!StreamEnsure(buffer, 0x27)) return nullptr;
-    auto* first = StreamTake(buffer, 5);
-    if (first != nullptr) {
-        first[0] = 0xc0032200u;
-        first[1] = 0xf8110000u;
-        first[2] = 0x0000000fu;
-        first[3] = 0x00000000u;
-        first[4] = 0x22000000u;
-    }
+    auto* first = StreamWrite(buffer, {0xc0032200u, 0xf8110000u, 0x0000000fu, 0x00000000u, 0x22000000u});
     emit(2, {0xc0001200u, 0x00000002u});
     emit(5, {0xc0033700u, 0x038f048eu, 0x070cc102u, 0x00000008u, 0x00000000u});
     emit(6, {0xc0044000u, 0x038f048eu, 0x0c02b303u, 0x0c410807u, 0x00001006u, 0x0000000fu});

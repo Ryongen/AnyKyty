@@ -1,3 +1,4 @@
+#include "SelfMarkingWrites.hpp"
 #include "TestVulkanDevice.h"
 #include "common/emulatorConfig.h"
 #include "common/threads.h"
@@ -6,6 +7,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
 #include "kyty_selfmark_rs.h"
+#include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 #include "prx/libSceAgcDriver/KytyShim/src/Faults.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
@@ -259,6 +261,74 @@ const char* CheckWritersAndCollector(Fixture& fixture, Store store, uint64_t blo
 	return nullptr;
 }
 
+uint64_t Words(const uint32_t* words) {
+	return uint64_t {words[0]} | (uint64_t {words[1]} << 32u);
+}
+
+const char* CheckCommandWritesMarkTheirPages(Fixture& fixture, const KytySelfMarkingAgc& agc, uint64_t block) {
+	const auto page = block + Page;
+	auto*      top  = reinterpret_cast<uint32_t*>(block + Block);
+	std::array<uint32_t, 8> host {};
+	::CommandBuffer reference {host.data(), host.data() + host.size(), host.data(), host.data() + host.size(), nullptr, nullptr, 0};
+	const auto* nop = agc.nop(&reference, 4);
+	const auto* rewind = agc.rewind(&reference, 0);
+	const auto  nop_words = Words(nop);
+	const auto  rewind_header = uint64_t {rewind[0]};
+	const auto  local = reinterpret_cast<uint64_t>(host.data());
+	if (AgcDriverPrepareCommandWrite_nid_no_patch(local, 16) != local) return "a range outside guest memory was given another address to write through";
+
+	fixture.Clean(block);
+	if (fixture.buffers.IsRegionCpuDirty(block, Block)) return "a buffer read did not leave the command pages clean";
+	if (kyty_selfmark_armed(page) != 0) return "the command block was armed before anything wrote it";
+	auto* words = reinterpret_cast<uint32_t*>(page + Slot);
+	::CommandBuffer buffer {words, top, words, top, nullptr, nullptr, 0};
+	auto before = g_faults.load();
+	if (agc.nop(&buffer, 4) != words) return "libSceAgc did not write its packet at the cursor";
+	if (g_faults.load() != before) return "a packet libSceAgc wrote to a watched page took a fault";
+	if (Read(page + Slot) != nop_words) return "the packet libSceAgc wrote did not reach guest memory";
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "libSceAgc did not mark the page it wrote";
+	if (kyty_selfmark_armed(page + Page) < KYTY_SELFMARK_DELTA_LEAST) return "the other clean pages of the block were not marked with the page libSceAgc wrote";
+	if (!kyty_selfmark_any(page, page + Page)) return "libSceAgc left no card for the page it wrote";
+	if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the packet of libSceAgc was reported before the synchronisation point";
+	fixture.renderer.CollectHotPageWrites();
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the synchronisation point did not report the page libSceAgc wrote";
+	if (kyty_selfmark_any(page, page + Page)) return "the card of libSceAgc survived its collection";
+	if (!fixture.GpuHolds(page + Slot, nop_words)) return "the GPU buffer does not hold the packet libSceAgc wrote";
+	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the upload disarmed the page libSceAgc wrote";
+
+	const auto across = page + Page - sizeof(uint32_t);
+	for (uint32_t round = 0; round < 8; round++) {
+		const auto state = round & 1u;
+		buffer.cursor_up = reinterpret_cast<uint32_t*>(across);
+		before           = g_faults.load();
+		auto* packet     = agc.rewind(&buffer, 1u - state);
+		if (reinterpret_cast<uint64_t>(packet) != across) return "libSceAgc did not write its packet across the two pages";
+		if (agc.patch_rewind(packet, static_cast<uint8_t>(state)) != 0) return "libSceAgc refused to patch its own packet";
+		if (g_faults.load() != before) return "a packet across two self-marked pages, or its patch, took a fault";
+		const auto expected = rewind_header | (uint64_t {state} << 63u);
+		if (Read(across) != expected) return "the packet across two pages or its patch did not reach guest memory";
+		if (!kyty_selfmark_any(page, page + Page) || !kyty_selfmark_any(page + Page, page + 2 * Page)) return "a packet across two pages did not leave a card on each";
+		fixture.renderer.CollectHotPageWrites(page, 2 * Page);
+		if (!fixture.buffers.IsRegionCpuDirty(page, Page) || !fixture.buffers.IsRegionCpuDirty(page + Page, Page)) return "a collection did not report both pages of a packet across them";
+		if (!fixture.GpuHolds(across, expected)) return "the GPU buffer does not hold the packet across two pages and its patch";
+	}
+
+	fixture.renderer.UnmarkWritten(block, Block, PageManager::MarkLeave::Refuse, static_cast<uint8_t>(KYTY_SELFMARK_NOTE_HOST_OTHER + 1));
+	fixture.renderer.CollectHotPageWrites();
+	fixture.Clean(block);
+	if (fixture.buffers.IsRegionCpuDirty(block, Block)) return "the upload after the block was given back did not leave its pages clean";
+	buffer.cursor_up = words;
+	before           = g_faults.load();
+	if (agc.nop(&buffer, 4) != words) return "libSceAgc did not write its packet at the cursor of a block given back";
+	if (g_faults.load() != before + 1) return "a packet libSceAgc wrote to a block given back to faults did not fault once";
+	if (Read(page + Slot) != nop_words) return "the packet written to a block given back did not reach guest memory";
+	if (kyty_selfmark_armed(page) != GivenBackBy(KYTY_SELFMARK_NOTE_HOST_OTHER)) return "libSceAgc marked a block given back to faults again";
+	if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of libSceAgc on a block given back did not report the page at once";
+	if (kyty_selfmark_any(page, page + Page)) return "a packet written to a block given back left a card";
+	if (!fixture.GpuHolds(page + Slot, nop_words)) return "the GPU buffer does not hold the packet written to a block given back";
+	return nullptr;
+}
+
 int Report(const char* failure) {
 	if (failure == nullptr) {
 		return 0;
@@ -267,7 +337,7 @@ int Report(const char* failure) {
 	return 1;
 }
 
-int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store store, Store brief, Store unpatched) {
+int CheckSelfMarkingWrites(GraphicContext& graphics, const KytySelfMarkingAgc& agc, uint64_t address, Store store, Store brief, Store unpatched) {
 	RenderContext    renderer(graphics);
 	CommandProcessor producer(renderer, 0);
 	producer.Reset();
@@ -289,6 +359,7 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 	if (failures == 0) failures += Report(CheckUnpatchedSiteKeepsTheFault(fixture, store, unpatched, first));
 	if (failures == 0) failures += Report(CheckShortSiteIsCorrected(fixture, store, brief, BlockAt(address, 2)));
 	if (failures == 0) failures += Report(CheckWritersAndCollector(fixture, store, BlockAt(address, 1)));
+	if (failures == 0) failures += Report(CheckCommandWritesMarkTheirPages(fixture, agc, BlockAt(address, 3)));
 
 	sigaction(SIGSEGV, &g_previous, nullptr);
 	renderer.UnmarkWritten(address, GuestBytes, PageManager::MarkLeave::Forget);
@@ -304,7 +375,7 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 
 }
 
-extern "C" int RunKytySelfMarkingWritesTest() {
+extern "C" int RunKytySelfMarkingWritesTest(const KytySelfMarkingAgc* agc) {
 	Common::InitializeThreads();
 	Config::Initialize();
 	Config::Load(Config::ConfigOptions {});
@@ -338,7 +409,7 @@ extern "C" int RunKytySelfMarkingWritesTest() {
 		return 1;
 	}
 	const auto address  = reinterpret_cast<uint64_t>(guest);
-	const auto failures = CheckSelfMarkingWrites(gpu.graphics, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100),
+	const auto failures = CheckSelfMarkingWrites(gpu.graphics, *agc, BlockAt(address, 0), reinterpret_cast<Store>(code), reinterpret_cast<Store>(code + 0x100),
 	                                             reinterpret_cast<Store>(code + 0x200));
 	if (sceKernelMunmap(address, Mapped) != 0) {
 		std::fputs("kyty_shim_self_marking_writes: FAILED: could not unmap guest backing\n", stderr);

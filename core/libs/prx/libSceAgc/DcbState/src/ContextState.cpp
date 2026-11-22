@@ -31,12 +31,15 @@ uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, uint32_t op
     const auto* function = __func__;
     std::uint32_t* first = nullptr;
     const auto append = [&](std::uint32_t count) {
-        auto* packet = Agc::Command::WriteNop(buf, count, function);
-        if (first == nullptr) {
-            first = packet;
-            packet[0] = Agc::Command::Header(0x10u, count, 0x68u);
-            packet[1] = operation;
+        if (first != nullptr) {
+            static_cast<void>(Agc::Command::WriteNop(buf, count, function));
+            return;
         }
+        auto packet = Agc::Command::Allocate(buf, count, function);
+        packet[0] = Agc::Command::Header(0x10u, count, 0x68u);
+        packet[1] = operation;
+        std::fill_n(packet.at(2), count - 2u, 0u);
+        first = packet.guest();
     };
     if (operation == 0) {
         append(5);

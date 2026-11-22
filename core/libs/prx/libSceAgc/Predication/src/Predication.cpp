@@ -13,7 +13,8 @@ int APS5_VABI sceAgcSetPacketPredication(uint32_t* packet, uint32_t predication)
     Agc::Command::Require(packet != nullptr, __func__, "null packet");
     Agc::Command::CheckBits(predication, 1, __func__);
     Agc::Command::Require((packet[0] >> 30u) == 3u, __func__, "packet is not a type-3 packet");
-    packet[0] = (packet[0] & ~1u) | predication;
+    const Agc::Command::Words words(packet, 1);
+    words[0] = (words[0] & ~1u) | predication;
     return 0;
 }
 
@@ -30,7 +31,8 @@ int APS5_VABI sceAgcSetRangePredication(uint32_t* start, const volatile uint32_t
         Agc::Command::Require(type == 3u, __func__, "range holds a packet that is neither type 2 nor type 3");
         const auto dwords = ((packet[0] >> 16u) & 0x3fffu) + 2u;
         Agc::Command::Require(static_cast<std::size_t>(end - packet) >= dwords, __func__, "range ends inside a packet");
-        packet[0] = (packet[0] & ~1u) | predication;
+        const Agc::Command::Words words(packet, 1);
+        words[0] = (words[0] & ~1u) | predication;
         packet += dwords;
     }
     return 0;

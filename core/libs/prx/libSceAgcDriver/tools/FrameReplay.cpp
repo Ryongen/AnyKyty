@@ -1092,8 +1092,9 @@ struct Replay {
             const bool settled = AgcDriverHoldSettled_nid_postfix(options.busyTimeout.count());
             const SettledHold hold{true};
             if (!settled) return;
-            AgcDriverPrepareCommandWrite_nid_no_patch(word.address, word.value.size());
-            std::memcpy(reinterpret_cast<void*>(static_cast<std::uintptr_t>(word.address)), word.value.data(), word.value.size());
+            const auto view = AgcDriverPrepareCommandWrite_nid_no_patch(word.address, word.value.size());
+            std::memcpy(reinterpret_cast<void*>(static_cast<std::uintptr_t>(view)), word.value.data(), word.value.size());
+            if (view != word.address) AgcDriverFinishCommandWrite_nid_no_patch(word.address, word.value.size());
             std::atomic_thread_fence(std::memory_order_seq_cst);
         }
     }
@@ -1140,6 +1141,7 @@ struct Replay {
         std::ranges::sort(parked);
         std::vector<std::pair<std::uint32_t*, std::uint32_t>> controls;
         std::vector<std::pair<std::uint32_t*, std::uint32_t>> releases;
+        std::vector<std::pair<std::uint64_t, std::size_t>> finishes;
         std::vector<std::size_t> candidates;
         for (const auto* chunk : found->second) {
             if (skipped.Overlaps(*chunk)) continue;
@@ -1147,8 +1149,9 @@ struct Replay {
             if (restoreBuffer.size() < size) restoreBuffer.resize(size);
             const std::span bytes(restoreBuffer.data(), size);
             reader.Read(*chunk, bytes);
-            auto* const target = reinterpret_cast<std::byte*>(static_cast<std::uintptr_t>(chunk->address));
-            AgcDriverPrepareCommandWrite_nid_no_patch(chunk->address, size);
+            const auto view = AgcDriverPrepareCommandWrite_nid_no_patch(chunk->address, size);
+            if (view != chunk->address) finishes.emplace_back(chunk->address, size);
+            auto* const target = reinterpret_cast<std::byte*>(static_cast<std::uintptr_t>(view));
             const auto first = static_cast<std::size_t>((4 - chunk->address % 4) % 4);
             candidates.clear();
             if (first + sizeof(std::uint32_t) <= size) {
@@ -1186,6 +1189,7 @@ struct Replay {
         }
         for (const auto& [control, value] : controls) std::atomic_ref<std::uint32_t>(*control).store(value, std::memory_order_release);
         for (const auto& [control, value] : releases) std::atomic_ref<std::uint32_t>(*control).store(value, std::memory_order_release);
+        for (const auto& [address, size] : finishes) AgcDriverFinishCommandWrite_nid_no_patch(address, size);
         return staged;
     }
 

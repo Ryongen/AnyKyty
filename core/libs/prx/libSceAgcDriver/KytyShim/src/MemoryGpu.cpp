@@ -6,6 +6,12 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
+#if defined(KYTY_SELF_MARKING)
+#include "common/runtimeSwitches.h"
+#include "kyty_selfmark_rs.h"
+#include "prx/libkernel/Pthread/include/Pthread.hpp"
+#endif
+
 #include <atomic>
 #include <cinttypes>
 #include <cstdlib>
@@ -317,6 +323,70 @@ void UnmarkWrittenPages(uint64_t vaddr, uint64_t size, bool refuse, uint8_t caus
 		g_gpu_resources->UnmarkWritten(vaddr, size, refuse ? Graphics::PageManager::MarkLeave::Refuse : Graphics::PageManager::MarkLeave::Release, cause);
 	}
 }
+
+#if defined(KYTY_SELF_MARKING)
+namespace {
+
+constexpr uint64_t CommandPage  = 4096;
+constexpr uint32_t PromoteRetry = 64;
+
+bool PromoteForCommandWrite(uint64_t page) noexcept {
+	thread_local uint64_t tried   = UINT64_MAX;
+	thread_local uint32_t refused = 0;
+	if (page == tried && ++refused < PromoteRetry) return false;
+	tried   = page;
+	refused = 0;
+#ifndef _WIN32
+	GuestDeliveryHold_nid_no_patch();
+#endif
+	const bool marked = g_gpu_resources->MarkWritten(page);
+#ifndef _WIN32
+	GuestDeliveryRelease_nid_no_patch();
+#endif
+	return marked;
+}
+
+int64_t ArmedForCommandWrite(uint64_t page) noexcept {
+	const auto delta = kyty_selfmark_armed(page);
+	if (delta != 0 || !PromoteForCommandWrite(page)) return delta;
+	return kyty_selfmark_armed(page);
+}
+
+}
+
+uint64_t CommandWriteView(uint64_t vaddr, uint64_t size) noexcept {
+	if (g_gpu_resources == nullptr || size == 0 || !IsGpuAddressRange(vaddr, size) || !kyty_selfmark_enabled() ||
+	    !Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::AgcSelfMark)) {
+		return vaddr;
+	}
+	const auto first = vaddr & ~(CommandPage - 1);
+	const auto last  = (vaddr + size - 1) & ~(CommandPage - 1);
+	const auto delta = ArmedForCommandWrite(first);
+	if (static_cast<uint64_t>(delta) < KYTY_SELFMARK_DELTA_LEAST) return vaddr;
+	for (auto page = first + CommandPage; page <= last; page += CommandPage) {
+		if (ArmedForCommandWrite(page) != delta) return vaddr;
+	}
+	return vaddr + static_cast<uint64_t>(delta);
+}
+
+void FinishCommandWrite(uint64_t vaddr, uint64_t size) noexcept {
+	if (size == 0) return;
+	std::atomic_thread_fence(std::memory_order_release);
+	for (auto page = vaddr & ~(CommandPage - 1); page < vaddr + size; page += CommandPage) {
+		(void)kyty_selfmark_mark(page);
+	}
+}
+#else
+uint64_t CommandWriteView(uint64_t vaddr, uint64_t size) noexcept {
+	(void)size;
+	return vaddr;
+}
+
+void FinishCommandWrite(uint64_t vaddr, uint64_t size) noexcept {
+	(void)vaddr;
+	(void)size;
+}
+#endif
 
 
 }

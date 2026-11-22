@@ -97,6 +97,7 @@ typedef bool (*KytySelfMarkGuestCode)(uint64_t address);
 bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAllocator allocator, KytySelfMarkFixedAllocator fixed,
                                      KytySelfMarkGuestCode guest);
 bool              kyty_selfmark_enabled(void);
+void              kyty_selfmark_set_enabled(bool on);
 KytySelfMarkFault kyty_selfmark_write_fault(uint64_t address);
 KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);
 uint64_t          kyty_selfmark_target(uint64_t entry, const uint64_t* registers);
@@ -104,6 +105,8 @@ uint64_t          kyty_selfmark_site(uint64_t entry);
 void              kyty_selfmark_service(void);
 void              kyty_selfmark_note(uint32_t kind);
 void              kyty_selfmark_set_writer(uint32_t kind);
+void              kyty_selfmark_note_site(uint64_t offset);
+size_t            kyty_selfmark_sites(uint64_t* offsets, uint64_t* counts, size_t capacity);
 void              kyty_selfmark_note_owner(uint32_t owner);
 uint32_t          kyty_selfmark_length(uint64_t entry);
 uint64_t          kyty_selfmark_breakpoint(uint64_t address);

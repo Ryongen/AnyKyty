@@ -3,6 +3,7 @@
 
 #include "common/debugCounters.h"
 #include "common/guardedCopy.h"
+#include "common/runtimeSwitches.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -282,7 +283,9 @@ std::uint32_t HostWriter(std::uint64_t rip) {
     if (_dl_find_object(reinterpret_cast<void*>(rip), &object) != 0 || object.dlfo_link_map == nullptr) return KYTY_SELFMARK_NOTE_HOST_OTHER;
     const std::string_view name = object.dlfo_link_map->l_name != nullptr ? object.dlfo_link_map->l_name : "";
     const auto             file = name.substr(name.find_last_of('/') + 1);
-    return file.starts_with("libSceAgc.") ? KYTY_SELFMARK_NOTE_HOST_AGC : KYTY_SELFMARK_NOTE_HOST_OTHER;
+    if (!file.starts_with("libSceAgc.")) return KYTY_SELFMARK_NOTE_HOST_OTHER;
+    kyty_selfmark_note_site((std::uint64_t{1} << 63u) | (rip - reinterpret_cast<std::uint64_t>(object.dlfo_map_start)));
+    return KYTY_SELFMARK_NOTE_HOST_AGC;
 #endif
 }
 
@@ -364,6 +367,7 @@ MarkedWrite MarkWrite(const FaultContext& context, std::uint64_t address, std::u
     }
     if (fault.outcome != KYTY_SELFMARK_PATCHED && fault.outcome != KYTY_SELFMARK_SLOW_STORE) {
         const auto kind = WriterKind(fault, rip);
+        if (kind == KYTY_SELFMARK_NOTE_GUEST_NOT_STORE) kyty_selfmark_note_site(rip);
         kyty_selfmark_note(kind);
         kyty_selfmark_set_writer(kind);
         if (PageArmed(page)) {
@@ -466,7 +470,9 @@ void InstallSelfMarking() {
     std::uintptr_t base  = 0;
     std::size_t    bytes = 0;
     GuestArena::GuestArenaRange_nid_postfix(&base, &bytes);
-    if (bytes != 0) kyty_selfmark_init(base + bytes, &ExecutableNear, &ExecutableFixed, &GuestCodeAddress);
+    if (bytes != 0 && kyty_selfmark_init(base + bytes, &ExecutableNear, &ExecutableFixed, &GuestCodeAddress)) {
+        kyty_selfmark_set_enabled(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites));
+    }
 #endif
 }
 

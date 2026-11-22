@@ -74,13 +74,13 @@ std::uint32_t* WriteData(CommandBuffer* buffer, bool compute, std::uint8_t dst, 
     auto* snapshot = count > inlineSnapshot.size() ? heapSnapshot.data() : inlineSnapshot.data();
     std::memcpy(snapshot, data, count * sizeof(std::uint32_t));
     const auto destination = compute ? static_cast<std::uint32_t>(dst) << 8u : ((dst & 1u) << 30u) | ((dst & 0x1eu) << 7u);
-    auto* packet = Allocate(buffer, count + 4u, function);
+    auto packet = Allocate(buffer, count + 4u, function);
     packet[0] = Header(0x37u, count + 4u);
     packet[1] = destination | (static_cast<std::uint32_t>(increment) << 16u) | (static_cast<std::uint32_t>(writeConfirm) << 20u) | (static_cast<std::uint32_t>(cachePolicy) << 25u);
     packet[2] = static_cast<std::uint32_t>(address);
     packet[3] = static_cast<std::uint32_t>(address >> 32u);
-    std::copy_n(snapshot, count, packet + 4);
-    return packet;
+    std::copy_n(snapshot, count, packet.at(4));
+    return packet.guest();
 }
 
 std::uint32_t* WriteWait(CommandBuffer* buffer, bool compute, std::uint8_t size, std::uint8_t compareFunction, std::uint8_t operation, std::uint8_t cachePolicy, const volatile void* address, std::uint64_t reference, std::uint64_t mask, std::uint32_t pollCycles, const char* function) {
@@ -99,12 +99,12 @@ std::uint32_t* WriteWait(CommandBuffer* buffer, bool compute, std::uint8_t size,
     CheckBits(guestAddress, 0xffffffffffffull, function);
     const auto waitSize = size == 0 ? 7u : 9u;
     const auto tagFlags = compute ? 0u : 4u;
-    auto* packet = Allocate(buffer, waitSize + 7u, function);
+    auto packet = Allocate(buffer, waitSize + 7u, function);
     packet[0] = Header(0x79u, 4, tagFlags);
     packet[1] = 0x342u;
     packet[2] = (size == 0 ? 0xc8010000u : 0xc8020000u) | static_cast<std::uint32_t>(guestAddress >> 32u);
     packet[3] = static_cast<std::uint32_t>(guestAddress);
-    auto* wait = packet + 4;
+    auto* wait = packet.at(4);
     wait[0] = Header(size == 0 ? 0x3cu : 0x93u, waitSize);
     const auto opBits = size == 0 ? ((operation & 3u) << 8u) | ((operation & 0xcu) << 4u) : ((operation & 1u) << 8u) | ((operation & 6u) << 5u);
     wait[1] = 0x10u | compareFunction | opBits | ((static_cast<std::uint32_t>(cachePolicy) & 3u) << 25u);
@@ -122,7 +122,7 @@ std::uint32_t* WriteWait(CommandBuffer* buffer, bool compute, std::uint8_t size,
     wait[waitSize] = Header(0x79u, 3, tagFlags);
     wait[waitSize + 1u] = 0x342u;
     wait[waitSize + 2u] = 0xc8000000u;
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* ValidateWait(std::uint32_t* packet, const char* function) {

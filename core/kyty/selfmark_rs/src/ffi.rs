@@ -35,6 +35,11 @@ pub extern "C" fn kyty_selfmark_init(guest_limit: u64, allocator: Option<NearAll
 }
 
 #[no_mangle]
+pub extern "C" fn kyty_selfmark_set_enabled(on: bool) {
+    sites::set_enabled(on && cards::pages() != 0);
+}
+
+#[no_mangle]
 pub extern "C" fn kyty_selfmark_enabled() -> bool {
     sites::enabled()
 }
@@ -77,6 +82,26 @@ pub unsafe extern "C" fn kyty_selfmark_service() {
 #[no_mangle]
 pub extern "C" fn kyty_selfmark_note(kind: u32) {
     sites::note(kind as usize)
+}
+
+#[no_mangle]
+pub extern "C" fn kyty_selfmark_note_site(offset: u64) {
+    sites::note_site(offset)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kyty_selfmark_sites(offsets: *mut u64, counts: *mut u64, capacity: usize) -> usize {
+    let mut used = 0;
+    for slot in 0..sites::NOTED_SITES {
+        let key = sites::NOTED_SITE_KEYS[slot].load(Ordering::Relaxed);
+        if key == 0 || used == capacity {
+            continue;
+        }
+        *offsets.add(used) = key - 1;
+        *counts.add(used) = sites::NOTED_SITE_COUNTS[slot].load(Ordering::Relaxed);
+        used += 1;
+    }
+    used
 }
 
 #[no_mangle]

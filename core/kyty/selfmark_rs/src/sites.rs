@@ -64,6 +64,9 @@ pub static BUSY: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_FAULTS: AtomicU64 = AtomicU64::new(0);
 pub static BREAKS: AtomicU64 = AtomicU64::new(0);
 pub static NOTED: [AtomicU64; NOTES] = [const { AtomicU64::new(0) }; NOTES];
+pub const NOTED_SITES: usize = 256;
+pub static NOTED_SITE_KEYS: [AtomicU64; NOTED_SITES] = [const { AtomicU64::new(0) }; NOTED_SITES];
+pub static NOTED_SITE_COUNTS: [AtomicU64; NOTED_SITES] = [const { AtomicU64::new(0) }; NOTED_SITES];
 static WRITER: [AtomicU64; WRITERS] = [const { AtomicU64::new(0) }; WRITERS];
 
 pub fn configure(allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>, guest: Option<GuestCode>) {
@@ -668,6 +671,25 @@ pub fn width_of(entry: u64) -> u32 {
 
 pub fn length_of(entry: u64) -> u32 {
     (unsafe { core::ptr::read((entry + SLOW_AT as u64) as *const u64) } >> 16) as u32 & 0xFF
+}
+
+pub fn note_site(offset: u64) {
+    let key = offset.wrapping_add(1);
+    let start = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 56) as usize;
+    for probe in 0..NOTED_SITES {
+        let slot = (start + probe) % NOTED_SITES;
+        let seen = NOTED_SITE_KEYS[slot].load(Ordering::Relaxed);
+        if seen == key
+            || (seen == 0
+                && match NOTED_SITE_KEYS[slot].compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => true,
+                    Err(now) => now == key,
+                })
+        {
+            NOTED_SITE_COUNTS[slot].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
 }
 
 pub fn note(kind: usize) {

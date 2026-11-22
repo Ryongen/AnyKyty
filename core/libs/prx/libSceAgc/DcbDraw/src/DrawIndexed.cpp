@@ -52,7 +52,7 @@ uint32_t* APS5_VABI sceAgcDcbDrawIndexIndirectMulti(CommandBuffer* buf, uint32_t
     const auto low = static_cast<std::uint32_t>(modifier);
     const auto control = Agc::Command::DrawIndexLocation(modifier) | ((low & 0x10u) << 23u) | ((count_indirect & 1u) << 30u) | ((low & 8u) << 28u);
     const auto initiator = Agc::Command::DrawInitiator(modifier, true);
-    auto* packet = Agc::Command::Allocate(buf, 16, __func__);
+    auto packet = Agc::Command::Allocate(buf, 16, __func__);
     packet[0] = Agc::Command::Header(0x79u, 3, 4);
     packet[1] = 0x342u;
     packet[2] = 0xc6000005u;
@@ -69,7 +69,7 @@ uint32_t* APS5_VABI sceAgcDcbDrawIndexIndirectMulti(CommandBuffer* buf, uint32_t
     packet[13] = Agc::Command::Header(0x79u, 3, 4);
     packet[14] = 0x342u;
     packet[15] = 0xc6000000u;
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t APS5_VABI sceAgcDcbDrawIndexIndirectMultiGetSize() {
@@ -79,7 +79,7 @@ std::uint32_t APS5_VABI sceAgcDcbDrawIndexIndirectMultiGetSize() {
 uint32_t* APS5_VABI sceAgcDcbDrawIndexMultiInstanced(CommandBuffer* buf, uint32_t index_count, const volatile void* index_addr, const volatile void* object_ids, uint32_t instance_count, uint64_t modifier) {
     const auto geometry = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(index_addr));
     const auto objects = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(object_ids));
-    auto* packet = Agc::Command::Allocate(buf, 15, __func__);
+    auto packet = Agc::Command::Allocate(buf, 15, __func__);
     packet[0] = Agc::Command::Header(0x79u, 3, 4);
     packet[1] = 0x342u;
     packet[2] = 0xc6000006u;
@@ -95,7 +95,7 @@ uint32_t* APS5_VABI sceAgcDcbDrawIndexMultiInstanced(CommandBuffer* buf, uint32_
     packet[12] = Agc::Command::Header(0x79u, 3, 4);
     packet[13] = 0x342u;
     packet[14] = 0xc6000000u;
-    return packet;
+    return packet.guest();
 }
 
 uint32_t APS5_VABI sceAgcDcbDrawIndexMultiInstancedGetSize(void) {

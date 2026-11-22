@@ -21,9 +21,9 @@ constexpr std::uint32_t InactivePacketWords = 9;
 constexpr std::uint32_t MaxWorkloadId = 63;
 constexpr std::uint32_t MaxActiveCount = 63;
 
-std::uint32_t* NewWorkloadPacket(CommandBuffer* buf, std::uint32_t words, const char* function) {
-    auto* packet = Agc::Command::Allocate(buf, words, function);
-    std::memset(packet, 0, words * sizeof(std::uint32_t));
+Agc::Command::Words NewWorkloadPacket(CommandBuffer* buf, std::uint32_t words, const char* function) {
+    auto packet = Agc::Command::Allocate(buf, words, function);
+    std::memset(packet.at(0), 0, words * sizeof(std::uint32_t));
     packet[0] = Agc::Command::Header(OpcodeNop, words, 0);
     return packet;
 }
@@ -57,10 +57,10 @@ uint32_t* APS5_VABI sceAgcAcbResetQueue(CommandBuffer* buf, uint32_t op, uint32_
     Agc::Command::Require(buf != nullptr, __func__, "null command buffer");
     constexpr std::uint32_t OpcodeNop = 0x10;
     constexpr std::uint32_t CustomDispatchReset = 0x09;
-    auto* packet = Agc::Command::Allocate(buf, 2, __func__);
+    auto packet = Agc::Command::Allocate(buf, 2, __func__);
     packet[0] = Agc::Command::Header(OpcodeNop, 2, CustomDispatchReset << 2);
     packet[1] = op;
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbRewind(CommandBuffer* buf, std::uint32_t initialState) {
@@ -72,23 +72,23 @@ std::uint32_t APS5_VABI sceAgcAcbRewindGetSize() {
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, std::uint32_t videoOutHandle, std::uint32_t displayBufferIndex) {
-    auto* packet = Agc::Command::Allocate(buf, AgcDriver::RenderingWaitPacketWords, __func__);
+    auto packet = Agc::Command::Allocate(buf, AgcDriver::RenderingWaitPacketWords, __func__);
     packet[0] = AgcDriver::RenderingWaitPacketHeader;
     packet[1] = videoOutHandle;
     packet[2] = displayBufferIndex;
     packet[3] = 0;
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbSetFlip(CommandBuffer* buf, std::uint32_t videoOutHandle, std::int32_t displayBufferIndex, std::uint32_t flipMode, std::int64_t flipArg) {
-    auto* packet = Agc::Command::Allocate(buf, AgcDriver::FlipPacketWords, __func__);
+    auto packet = Agc::Command::Allocate(buf, AgcDriver::FlipPacketWords, __func__);
     packet[0] = AgcDriver::FlipPacketHeader;
     packet[1] = videoOutHandle;
     packet[2] = static_cast<std::uint32_t>(displayBufferIndex);
     packet[3] = flipMode;
     packet[4] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(flipArg));
     packet[5] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(flipArg) >> 32u);
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadsActive(CommandBuffer* buf, std::uint32_t streamId, const std::uint32_t* workloadIds, std::uint32_t workloadCount) {
@@ -101,29 +101,29 @@ std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadsActive(CommandBuffer* buf, std::ui
         if ((mask & bit) != 0) return nullptr;
         mask |= bit;
     }
-    auto* packet = NewWorkloadPacket(buf, ActivePacketWords, __func__);
+    auto packet = NewWorkloadPacket(buf, ActivePacketWords, __func__);
     packet[1] = streamId;
     packet[2] = static_cast<std::uint32_t>(mask);
     packet[3] = static_cast<std::uint32_t>(mask >> 32u);
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadComplete(CommandBuffer* buf, std::uint32_t streamId, std::uint32_t workloadId) {
     if (buf == nullptr || workloadId > MaxWorkloadId || !AgcDriverWorkloadStreamRegistered_nid_postfix(streamId)) return nullptr;
     const std::uint64_t clearMask = ~(std::uint64_t{1} << workloadId);
-    auto* packet = NewWorkloadPacket(buf, CompletePacketWords, __func__);
+    auto packet = NewWorkloadPacket(buf, CompletePacketWords, __func__);
     packet[1] = streamId;
     packet[2] = workloadId;
     packet[3] = static_cast<std::uint32_t>(clearMask);
     packet[4] = static_cast<std::uint32_t>(clearMask >> 32u);
-    return packet;
+    return packet.guest();
 }
 
 std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadStreamInactive(CommandBuffer* buf, std::uint32_t streamId) {
     if (buf == nullptr || !AgcDriverWorkloadStreamRegistered_nid_postfix(streamId)) return nullptr;
-    auto* packet = NewWorkloadPacket(buf, InactivePacketWords, __func__);
+    auto packet = NewWorkloadPacket(buf, InactivePacketWords, __func__);
     packet[1] = streamId;
-    return packet;
+    return packet.guest();
 }
 
 uint32_t* APS5_VABI sceAgcAcbPushMarker(CommandBuffer* buf, const char* str, uint32_t color) {

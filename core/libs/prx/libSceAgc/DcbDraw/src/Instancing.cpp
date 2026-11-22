@@ -19,12 +19,12 @@ std::uint32_t APS5_VABI sceAgcDcbSetNumInstancesGetSize() {
 uint32_t* APS5_VABI sceAgcDcbSetBaseIndirectArgs(CommandBuffer* buf, uint32_t shader_type, const volatile void* indirect_base_addr) {
     const auto address = reinterpret_cast<std::uintptr_t>(indirect_base_addr);
     Agc::Command::Require((address & 1u) == 0, __func__, "an odd indirect base address is not measured");
-    auto* packet = Agc::Command::Allocate(buf, 4, __func__);
+    auto packet = Agc::Command::Allocate(buf, 4, __func__);
     packet[0] = Agc::Command::Header(0x11u, 4) | (shader_type << 1u);
     packet[1] = 1;
     packet[2] = static_cast<std::uint32_t>(address) & ~6u;
     packet[3] = static_cast<std::uint32_t>(address >> 32u);
-    return packet;
+    return packet.guest();
 }
 
 }
