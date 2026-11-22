@@ -43,7 +43,7 @@ public:
 	void CollectHotPageWrites(HotPageWritten written, void* context, uint64_t vaddr = 0, uint64_t size = 0);
 	void ForgetHotPages(uint64_t vaddr, uint64_t size);
 
-	enum class MarkLeave { Release, Refuse, Forget, Open };
+	enum class MarkLeave { Release, Refuse, Forget };
 	static constexpr uint8_t MARK_CAUSE_PREPARED = 12;
 	[[nodiscard]] bool MarkWritten(uint64_t vaddr);
 	void               UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, uint8_t cause = 0);

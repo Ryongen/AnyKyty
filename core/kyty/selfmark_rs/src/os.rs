@@ -20,6 +20,7 @@ mod imp {
     const MAP_ANONYMOUS: i32 = 0x20;
     const MAP_NORESERVE: i32 = 0x4000;
     const SYS_MEMBARRIER: i64 = 324;
+    const SYS_GETTID: i64 = 186;
     const MEMBARRIER_QUERY: i64 = 0;
     const MEMBARRIER_SYNC_CORE: i64 = 1 << 5;
     const MEMBARRIER_REGISTER_SYNC_CORE: i64 = 1 << 6;
@@ -107,6 +108,10 @@ mod imp {
             sched_yield();
         }
     }
+
+    pub fn thread_id() -> u64 {
+        unsafe { syscall(SYS_GETTID) as u64 }
+    }
 }
 
 #[cfg(windows)]
@@ -121,6 +126,7 @@ mod imp {
         fn FlushProcessWriteBuffers();
         fn GetCurrentProcess() -> *mut c_void;
         fn SwitchToThread() -> i32;
+        fn GetCurrentThreadId() -> u32;
     }
 
     const MEM_COMMIT: u32 = 0x1000;
@@ -190,6 +196,10 @@ mod imp {
         unsafe {
             SwitchToThread();
         }
+    }
+
+    pub fn thread_id() -> u64 {
+        unsafe { GetCurrentThreadId() as u64 }
     }
 }
 

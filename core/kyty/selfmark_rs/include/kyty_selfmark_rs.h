@@ -61,7 +61,17 @@ enum {
 	KYTY_SELFMARK_NOTE_GIVEN_BACK       = 16,
 	KYTY_SELFMARK_NOTE_PAGE_STATE       = 32,
 	KYTY_SELFMARK_NOTE_GIVEN_BACK_BY    = 48,
-	KYTY_SELFMARK_NOTES                 = 64
+	KYTY_SELFMARK_NOTE_OWNERS           = 64,
+	KYTY_SELFMARK_OWNER_KINDS           = 32,
+	KYTY_SELFMARK_OWNERS                = 6,
+	KYTY_SELFMARK_NOTES                 = 256
+};
+
+enum {
+	KYTY_SELFMARK_FAULT_PATCHED_GPU_WRITTEN = 12,
+	KYTY_SELFMARK_FAULT_PATCHED_MARKED      = 13,
+	KYTY_SELFMARK_FAULT_PATCHED_OTHER       = 14,
+	KYTY_SELFMARK_FAULT_PATCHED_GIVEN_BACK  = 16
 };
 
 enum {
@@ -69,7 +79,6 @@ enum {
 	KYTY_SELFMARK_PAGE_MARKED      = 1,
 	KYTY_SELFMARK_PAGE_GIVEN_BACK  = 2,
 	KYTY_SELFMARK_PAGE_GPU_WRITTEN = 3,
-	KYTY_SELFMARK_PAGE_OPEN        = 4,
 	KYTY_SELFMARK_PAGE_NOT_WATCHED = 5,
 	KYTY_SELFMARK_PAGE_HOT         = 6,
 	KYTY_SELFMARK_PAGE_MARKABLE    = 7,
@@ -111,6 +120,8 @@ void              kyty_selfmark_service(void);
 void              kyty_selfmark_set_short(bool on);
 bool              kyty_selfmark_short(void);
 void              kyty_selfmark_note(uint32_t kind);
+void              kyty_selfmark_set_writer(uint32_t kind);
+void              kyty_selfmark_note_owner(uint32_t owner);
 uint32_t          kyty_selfmark_length(uint64_t entry);
 uint64_t          kyty_selfmark_breakpoint(uint64_t address);
 bool              kyty_selfmark_table_fault(uint64_t address);

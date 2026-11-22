@@ -17,7 +17,11 @@ pub type FixedAllocator = unsafe extern "C" fn(address: u64, bytes: *mut u64) ->
 pub type GuestCode = unsafe extern "C" fn(address: u64) -> bool;
 
 pub const ARENA_BYTES: usize = 256 * 1024;
-pub const NOTES: usize = 64;
+pub const NOTES: usize = 256;
+const OWNER_NOTES: usize = 64;
+const OWNER_KINDS: usize = 32;
+const OWNERS: usize = 6;
+const WRITERS: usize = 1024;
 const ARENA_SLOTS: usize = ARENA_BYTES / SLOT;
 const ARENA_WORDS: usize = ARENA_SLOTS.div_ceil(64);
 const ARENAS: usize = 64;
@@ -62,6 +66,7 @@ pub static BUSY: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_FAULTS: AtomicU64 = AtomicU64::new(0);
 pub static BREAKS: AtomicU64 = AtomicU64::new(0);
 pub static NOTED: [AtomicU64; NOTES] = [const { AtomicU64::new(0) }; NOTES];
+static WRITER: [AtomicU64; WRITERS] = [const { AtomicU64::new(0) }; WRITERS];
 
 pub fn configure(allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>, guest: Option<GuestCode>) {
     ALLOCATOR.store(allocator.map_or(0, |function| function as usize), Ordering::Release);
@@ -709,5 +714,19 @@ pub fn length_of(entry: u64) -> u32 {
 pub fn note(kind: usize) {
     if kind < NOTES {
         NOTED[kind].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn set_writer(kind: u32) {
+    let thread = os::thread_id();
+    WRITER[thread as usize % WRITERS].store(thread << 8 | (kind as u64 & 0xFF), Ordering::Relaxed);
+}
+
+pub fn note_owner(owner: usize) {
+    let thread = os::thread_id();
+    let slot = WRITER[thread as usize % WRITERS].load(Ordering::Relaxed);
+    let kind = if slot >> 8 == thread { (slot & 0xFF) as usize } else { 0 };
+    if owner < OWNERS && kind < OWNER_KINDS {
+        NOTED[OWNER_NOTES + owner * OWNER_KINDS + kind].fetch_add(1, Ordering::Relaxed);
     }
 }

@@ -1,6 +1,5 @@
 #include "TestVulkanDevice.h"
 #include "common/emulatorConfig.h"
-#include "common/runtimeSwitches.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -31,7 +30,7 @@ namespace Memory = Libs::LibKernel::Memory;
 
 constexpr uint64_t Page         = TRACKER_PAGE_SIZE;
 constexpr uint64_t Block        = 0x10000;
-constexpr uint64_t GuestBytes   = 5 * Block;
+constexpr uint64_t GuestBytes   = 4 * Block;
 constexpr uint64_t CodeBytes    = Block;
 constexpr int      CpuReadWrite = 0x03;
 constexpr uint64_t Slot         = 0x40;
@@ -221,54 +220,6 @@ const char* CheckUnpatchedSiteKeepsTheFault(Fixture& fixture, Store store, Store
 	return nullptr;
 }
 
-void SetOpenPolicy(Fixture& fixture, bool open) {
-	Common::RuntimeSwitches::Assign(Common::RuntimeSwitches::Switch::SelfMarkingOpen, open);
-	fixture.renderer.CollectHotPageWrites();
-}
-
-const char* CheckUnpatchedWriteOpensThePage(Fixture& fixture, Store store, Store unpatched, uint64_t block) {
-	const auto page   = block + Page;
-	const auto target = page + Slot;
-	fixture.Clean(block);
-	auto before = g_faults.load();
-	WriteOnThread(store, target - Displacement, 0x9001);
-	if (g_faults.load() != before + 1) return "the corrected site did not take one fault to mark a fresh page";
-	if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the corrected site did not mark the fresh page";
-	fixture.renderer.CollectHotPageWrites();
-	if (!fixture.GpuHolds(target, 0x9001)) return "the GPU buffer does not hold the first write to the fresh page";
-
-	for (uint64_t round = 0; round < 3; round++) {
-		const auto value = 0x9100 + round * 0x10;
-		before           = g_faults.load();
-		WriteOnThread(unpatched, target + 8, value);
-		if (g_faults.load() != before + 1) return "an uncorrected write to a marked page did not fault once";
-		if (Read(target + 8) != value) return "the uncorrected write did not reach guest memory";
-		if (kyty_selfmark_armed(page) != 0) return "the page was not opened for the cycle by an uncorrected write";
-		if (kyty_selfmark_armed(page + Page) < KYTY_SELFMARK_DELTA_LEAST) return "the other pages of the block did not stay marked";
-		if (fixture.renderer.MarkState(page) != KYTY_SELFMARK_PAGE_OPEN) return "the page is not in the open state";
-		if (!fixture.buffers.IsRegionCpuDirty(page, Page)) return "the fault of an uncorrected write did not report the page at once";
-
-		before = g_faults.load();
-		WriteOnThread(store, target - Displacement, value + 1);
-		WriteOnThread(unpatched, target + 8, value + 2);
-		if (g_faults.load() != before) return "a write to a page open for the cycle took a fault";
-		if (Read(target) != value + 1 || Read(target + 8) != value + 2) return "writes to a page open for the cycle did not reach guest memory";
-		if (kyty_selfmark_any(page, page + Page)) return "a write to a page open for the cycle left a card";
-		if (!fixture.GpuHolds(target, value + 1) || !fixture.GpuHolds(target + 8, value + 2)) return "the GPU buffer does not hold the writes to a page open for the cycle";
-		if (fixture.buffers.IsRegionCpuDirty(page, Page)) return "the upload did not leave the opened page clean";
-		if (kyty_selfmark_armed(page) < KYTY_SELFMARK_DELTA_LEAST) return "the page was not marked again when its upload made it clean";
-		if (fixture.renderer.MarkState(page) != KYTY_SELFMARK_PAGE_MARKED) return "the page did not come back to the marked state";
-
-		before = g_faults.load();
-		WriteOnThread(store, target - Displacement, value + 3);
-		if (g_faults.load() != before) return "a corrected write took a fault on a page marked again";
-		if (!kyty_selfmark_any(page, page + Page)) return "a corrected write to a page marked again left no card";
-		fixture.renderer.CollectHotPageWrites();
-		if (!fixture.GpuHolds(target, value + 3)) return "the GPU buffer does not hold the write to a page marked again";
-	}
-	return nullptr;
-}
-
 const char* CheckSwitchedOffShortSites(Fixture& fixture, Store store, Store brief, uint64_t block) {
 	const auto page   = block + Page;
 	const auto target = page + Slot;
@@ -286,7 +237,9 @@ const char* CheckSwitchedOffShortSites(Fixture& fixture, Store store, Store brie
 	WriteOnThread(brief, target, 0x8002);
 	if (g_faults.load() != before + 1) return "a short site did not fault while short sites are switched off";
 	if (Read(target) != 0x8002) return "the write of a switched off short site did not reach guest memory";
-	if (kyty_selfmark_armed(page) >= KYTY_SELFMARK_DELTA_LEAST) return "the page stayed marked after the write of a switched off short site";
+	if (kyty_selfmark_armed(page) != KYTY_SELFMARK_DELTA_REFUSED) return "the block was not given back to faults by a switched off short site";
+	if ((fixture.renderer.MarkState(page) & 0xFFu) != KYTY_SELFMARK_PAGE_GIVEN_BACK) return "the page of a block given back is not reported as such";
+	if ((fixture.renderer.MarkState(page) >> 8u) != KYTY_SELFMARK_NOTE_GUEST_SHORT + 1) return "the writer that gave the block back was not recorded";
 	if (!fixture.GpuHolds(target, 0x8002)) return "the GPU buffer does not hold the write of a switched off short site";
 
 	kyty_selfmark_set_short(true);
@@ -369,15 +322,7 @@ int CheckSelfMarkingWrites(GraphicContext& graphics, uint64_t address, Store sto
 	const auto first    = BlockAt(address, 0);
 	int        failures = Report(CheckFirstFaultsCorrectTheSite(fixture, store, first));
 	if (failures == 0) failures += Report(CheckCorrectedWritesTakeNoFault(fixture, store, first));
-	if (failures == 0) {
-		SetOpenPolicy(fixture, false);
-		fixture.Clean(first);
-		WriteOnThread(store, first + Page + Slot - Displacement, 0x3fff);
-		fixture.renderer.CollectHotPageWrites();
-		failures += Report(CheckUnpatchedSiteKeepsTheFault(fixture, store, unpatched, first));
-		SetOpenPolicy(fixture, true);
-	}
-	if (failures == 0) failures += Report(CheckUnpatchedWriteOpensThePage(fixture, store, unpatched, BlockAt(address, 4)));
+	if (failures == 0) failures += Report(CheckUnpatchedSiteKeepsTheFault(fixture, store, unpatched, first));
 	if (failures == 0) failures += Report(CheckShortSiteIsCorrected(fixture, store, brief, BlockAt(address, 2)));
 	if (failures == 0) failures += Report(CheckSwitchedOffShortSites(fixture, store, brief, BlockAt(address, 3)));
 	if (failures == 0) failures += Report(CheckWritersAndCollector(fixture, store, BlockAt(address, 1)));

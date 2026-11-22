@@ -1,5 +1,9 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
+#if defined(KYTY_SELF_MARKING)
+#include "kyty_selfmark_rs.h"
+#endif
+
 #include "common/alignment.h"
 #include "gpu_tiler_shaders/buffer_scatter_spv.h"
 #include "common/assert.h"
@@ -583,6 +587,14 @@ void BufferCache::CountWriteFault(WriteFaultOwner owner, bool image) {
 	                : owner == WriteFaultOwner::Buffer      ? stats.buffer
 	                                                        : stats.other;
 	counter.fetch_add(1, std::memory_order_relaxed);
+#if defined(KYTY_SELF_MARKING)
+	kyty_selfmark_note_owner(owner == WriteFaultOwner::CommandBuffer    ? 0u
+	                         : owner == WriteFaultOwner::CommandSegment ? 1u
+	                         : owner == WriteFaultOwner::GpuNeighbor    ? 2u
+	                         : image                                    ? 5u
+	                         : owner == WriteFaultOwner::Buffer         ? 3u
+	                                                                    : 4u);
+#endif
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool guest_fault) {

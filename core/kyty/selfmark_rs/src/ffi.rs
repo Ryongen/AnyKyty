@@ -91,6 +91,16 @@ pub extern "C" fn kyty_selfmark_note(kind: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn kyty_selfmark_set_writer(kind: u32) {
+    sites::set_writer(kind)
+}
+
+#[no_mangle]
+pub extern "C" fn kyty_selfmark_note_owner(owner: u32) {
+    sites::note_owner(owner as usize)
+}
+
+#[no_mangle]
 pub extern "C" fn kyty_selfmark_length(entry: u64) -> u32 {
     sites::length_of(entry)
 }

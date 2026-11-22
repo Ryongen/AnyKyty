@@ -64,7 +64,6 @@ constexpr size_t   HOT_IDLE_PER_SWEEP = 1024;
 constexpr uint64_t HOT_GRANULE_SIZE   = 2 * 1024 * 1024;
 constexpr uint64_t HOT_CLUSTER_GAP    = 1024 * 1024;
 constexpr uint8_t  HOT_MARKED         = 4;
-constexpr uint8_t  HOT_MARKED_OPEN    = 5;
 constexpr uint32_t MARKED_REGION_CAP  = 1u << 16u;
 constexpr size_t   MARKED_RUNS        = 256;
 constexpr size_t   MARK_BLOCK_PAGES   = 16;
@@ -282,16 +281,6 @@ struct PageManager::Impl {
 				}
 			}
 
-			if constexpr (track && !is_read) {
-				if (page.hot == HOT_MARKED_OPEN && update && new_count == 1) [[unlikely]] {
-					page.hot = HOT_MARKED;
-					if (page.access_watchers == 0) {
-						(void)ArmPage(address, BackingDelta(address));
-					}
-					mark_rearmed.fetch_add(1, std::memory_order_relaxed);
-				}
-			}
-
 			if (new_perms != perms) [[unlikely]] {
 				release_pending();
 				perms = new_perms;
@@ -477,26 +466,16 @@ struct PageManager::Impl {
 			auto&      state   = region.pages[page];
 			const auto address = region_base + page * PAGE_SIZE;
 			bool       changed = false;
-			if (leave == MarkLeave::Open) {
-				if (state.hot == HOT_MARKED) {
-					const auto old_perms = state.Perms();
-					state.hot            = HOT_MARKED_OPEN;
-					(void)ArmPage(address, 0);
-					changed = state.Perms() != old_perms;
-					mark_opened.fetch_add(1, std::memory_order_relaxed);
-				}
-			} else {
-				if (state.hot == HOT_MARKED || state.hot == HOT_MARKED_OPEN) {
-					changed = Demote(region, state, page);
-					(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
-				}
-				if (refuse) {
-					state.mark_refusals = cause != 0 ? cause : 1;
-				} else if (leave == MarkLeave::Forget) {
-					state.mark_refusals = 0;
-				}
-				(void)ArmPage(address, state.mark_refusals != 0 ? MARK_REFUSED : 0);
+			if (state.hot == HOT_MARKED) {
+				changed = Demote(region, state, page);
+				(refuse ? mark_refused : mark_forgotten).fetch_add(1, std::memory_order_relaxed);
 			}
+			if (refuse) {
+				state.mark_refusals = cause != 0 ? cause : 1;
+			} else if (leave == MarkLeave::Forget) {
+				state.mark_refusals = 0;
+			}
+			(void)ArmPage(address, state.mark_refusals != 0 ? MARK_REFUSED : 0);
 			if (changed && run_pages != 0 && run_begin + run_pages == page && state.Perms() == run_perms) {
 				run_pages++;
 			} else if (changed) {
@@ -571,9 +550,8 @@ struct PageManager::Impl {
 		              " libSceAgc, %" PRIu64 " other host code, %" PRIu64 " page not watched; blocks given back by writer: %" PRIu64
 		              " patched site, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64 " no jump window, %" PRIu64
 		              " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64 " libSceAgc, %" PRIu64
-		              " other host code; unpatched writes open the page for a cycle %s, %" PRIu64 " pages opened, %" PRIu64
-		              " armed again; faults of patched sites by page state: %" PRIu64 " unknown, %" PRIu64 " marked, %" PRIu64
-		              " in a block given back, %" PRIu64 " written by the GPU, %" PRIu64 " open for the cycle, %" PRIu64 " not watched, %" PRIu64
+		              " other host code; faults of patched sites by page state: %" PRIu64 " unknown, %" PRIu64 " marked, %" PRIu64
+		              " in a block given back, %" PRIu64 " written by the GPU, %" PRIu64 " not watched, %" PRIu64
 		              " hot, %" PRIu64 " markable; those in a block given back, by who gave it back: %" PRIu64 " unrecorded, %" PRIu64
 		              " patched site, %" PRIu64 " short site, %" PRIu64 " not a plain store, %" PRIu64 " no jump window, %" PRIu64
 		              " borrowed bytes, %" PRIu64 " other guest site, %" PRIu64 " patcher busy, %" PRIu64 " libSceAgc, %" PRIu64
@@ -592,14 +570,28 @@ struct PageManager::Impl {
 		              back(KYTY_SELFMARK_NOTE_PATCHED_UNARMED), back(KYTY_SELFMARK_NOTE_GUEST_SHORT), back(KYTY_SELFMARK_NOTE_GUEST_NOT_STORE),
 		              back(KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW), back(KYTY_SELFMARK_NOTE_GUEST_FROZEN), back(KYTY_SELFMARK_NOTE_GUEST_OTHER),
 		              back(KYTY_SELFMARK_NOTE_GUEST_BUSY), back(KYTY_SELFMARK_NOTE_HOST_AGC), back(KYTY_SELFMARK_NOTE_HOST_OTHER),
-		              mark_open.load(std::memory_order_relaxed) ? "on" : "off", take(mark_opened), take(mark_rearmed),
 		              why(KYTY_SELFMARK_PAGE_UNKNOWN), why(KYTY_SELFMARK_PAGE_MARKED), why(KYTY_SELFMARK_PAGE_GIVEN_BACK),
-		              why(KYTY_SELFMARK_PAGE_GPU_WRITTEN), why(KYTY_SELFMARK_PAGE_OPEN), why(KYTY_SELFMARK_PAGE_NOT_WATCHED),
+		              why(KYTY_SELFMARK_PAGE_GPU_WRITTEN), why(KYTY_SELFMARK_PAGE_NOT_WATCHED),
 		              why(KYTY_SELFMARK_PAGE_HOT), why(KYTY_SELFMARK_PAGE_MARKABLE), by(0), by(1 + KYTY_SELFMARK_NOTE_PATCHED_UNARMED),
 		              by(1 + KYTY_SELFMARK_NOTE_GUEST_SHORT), by(1 + KYTY_SELFMARK_NOTE_GUEST_NOT_STORE),
 		              by(1 + KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW), by(1 + KYTY_SELFMARK_NOTE_GUEST_FROZEN),
 		              by(1 + KYTY_SELFMARK_NOTE_GUEST_OTHER), by(1 + KYTY_SELFMARK_NOTE_GUEST_BUSY), by(1 + KYTY_SELFMARK_NOTE_HOST_AGC),
 		              by(1 + KYTY_SELFMARK_NOTE_HOST_OTHER), by(1 + KYTY_SELFMARK_NOTE_HOST_PREPARED));
+		Log::WriteToConsoleAndLog(line);
+		static constexpr const char* owners[KYTY_SELFMARK_OWNERS] = {"command buffer", "command segment", "block the GPU wrote in", "buffer", "other", "image"};
+		size_t used = static_cast<size_t>(std::snprintf(line, sizeof(line), "[kyty-selfmark-owners] write faults of the last %.0f s by owner of the page and writer",
+		                                                static_cast<double>(now_ns - last) / 1e9));
+		for (uint32_t owner = 0; owner < KYTY_SELFMARK_OWNERS; owner++) {
+			used += static_cast<size_t>(std::snprintf(line + used, sizeof(line) - used, "; %s:", owners[owner]));
+			for (uint32_t kind = 0; kind < KYTY_SELFMARK_OWNER_KINDS && used + 32 < sizeof(line); kind++) {
+				const auto index = KYTY_SELFMARK_NOTE_OWNERS + owner * KYTY_SELFMARK_OWNER_KINDS + kind;
+				const auto count = stats.notes[index] - mark_notes_seen[index].exchange(stats.notes[index], std::memory_order_relaxed);
+				if (count != 0) {
+					used += static_cast<size_t>(std::snprintf(line + used, sizeof(line) - used, " k%" PRIu32 "=%" PRIu64, kind, count));
+				}
+			}
+		}
+		std::snprintf(line + used, sizeof(line) - used, "\n");
 		Log::WriteToConsoleAndLog(line);
 #endif
 	}
@@ -724,10 +716,7 @@ struct PageManager::Impl {
 	std::atomic<uint64_t>                    mark_patched_seen {0};
 	std::atomic<uint64_t>                    mark_refusals_seen {0};
 	std::atomic<bool>                        mark_short {true};
-	std::atomic<bool>                        mark_open {true};
-	std::atomic<uint64_t>                    mark_opened {0};
-	std::atomic<uint64_t>                    mark_rearmed {0};
-	std::array<std::atomic<uint64_t>, 64>    mark_notes_seen {};
+	std::array<std::atomic<uint64_t>, 256>   mark_notes_seen {};
 
 	std::mutex                                  hot_mutex;
 	std::map<uint64_t, uint32_t>                hot_pages;
@@ -1036,9 +1025,6 @@ bool PageManager::MarkWritten(uint64_t vaddr) {
 	if (state->access_watchers != 0) {
 		return false;
 	}
-	if (state->hot == HOT_MARKED_OPEN) {
-		return false;
-	}
 	if (state->hot == HOT_MARKED) {
 		const auto delta = BackingDelta(page);
 		if (delta != 0 && ArmPage(page, delta)) {
@@ -1068,9 +1054,6 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, 
 	if (size == 0 || !GuestRange {vaddr, size}.Valid() || impl.marked_region_count.load(std::memory_order_acquire) == 0) {
 		return;
 	}
-	if (leave == MarkLeave::Refuse && impl.mark_open.load(std::memory_order_relaxed)) {
-		leave = MarkLeave::Open;
-	}
 	const bool refuse = leave == MarkLeave::Refuse;
 	const auto end    = Common::AlignUp(vaddr + size, PAGE_SIZE);
 	for (auto at = Common::AlignDown(vaddr, PAGE_SIZE); at < end;) {
@@ -1090,7 +1073,7 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, 
 				if (refuse) {
 					bool any = false;
 					for (auto page = first; page < last && !any; page++) {
-						any = region->pages[page].hot == HOT_MARKED || region->pages[page].hot == HOT_MARKED_OPEN;
+						any = region->pages[page].hot == HOT_MARKED;
 					}
 					if (any) {
 						first = first / MARK_BLOCK_PAGES * MARK_BLOCK_PAGES;
@@ -1123,9 +1106,6 @@ uint32_t PageManager::MarkState(uint64_t vaddr) {
 	if (state->hot == HOT_MARKED) {
 		return 1;
 	}
-	if (state->hot == HOT_MARKED_OPEN) {
-		return 4;
-	}
 	if (state->mark_refusals != 0) {
 		return 2u | (uint32_t {state->mark_refusals} << 8u);
 	}
@@ -1157,10 +1137,6 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 		const bool on = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingShort);
 		if (impl.mark_short.exchange(on, std::memory_order_acq_rel) != on) {
 			kyty_selfmark_set_short(on);
-			ForgetAllWritten();
-		}
-		const bool open = Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingOpen);
-		if (impl.mark_open.exchange(open, std::memory_order_acq_rel) != open) {
 			ForgetAllWritten();
 		}
 		kyty_selfmark_service();
