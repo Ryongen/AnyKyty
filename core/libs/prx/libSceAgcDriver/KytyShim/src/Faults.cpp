@@ -296,7 +296,8 @@ std::uint32_t WriterKind(const KytySelfMarkFault& fault, std::uint64_t rip) {
         case KYTY_SELFMARK_BUSY: return KYTY_SELFMARK_NOTE_GUEST_BUSY;
         case KYTY_SELFMARK_REFUSED:
             switch (fault.reason) {
-                case KYTY_SELFMARK_REFUSAL_NOT_STORE: return KYTY_SELFMARK_NOTE_GUEST_NOT_STORE;
+                case KYTY_SELFMARK_REFUSAL_NOT_STORE:
+                case KYTY_SELFMARK_REFUSAL_EXTENDED: return KYTY_SELFMARK_NOTE_GUEST_NOT_STORE;
                 case KYTY_SELFMARK_REFUSAL_NO_WINDOW: return KYTY_SELFMARK_NOTE_GUEST_NO_WINDOW;
                 case KYTY_SELFMARK_REFUSAL_FROZEN: return KYTY_SELFMARK_NOTE_GUEST_FROZEN;
                 case KYTY_SELFMARK_REFUSAL_NOT_GUEST_CODE: return HostWriter(rip);
@@ -472,6 +473,7 @@ void InstallSelfMarking() {
     GuestArena::GuestArenaRange_nid_postfix(&base, &bytes);
     if (bytes != 0 && kyty_selfmark_init(base + bytes, &ExecutableNear, &ExecutableFixed, &GuestCodeAddress)) {
         kyty_selfmark_set_enabled(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites));
+        kyty_selfmark_set_extended(Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingRmw));
     }
 #endif
 }

@@ -13,6 +13,7 @@ pub struct Tables {
     pub delta: u64,
     pub cards: u64,
     pub pages: u32,
+    pub extended: u64,
 }
 
 pub struct Built {
@@ -134,6 +135,9 @@ fn write_through(code: &mut Code, store: &Store, original: &[u8], pointer: u8) {
                 Plain::Same => {
                     if store.escape {
                         code.put(0x0F);
+                        if store.map == 3 {
+                            code.put(0x3A);
+                        }
                     }
                     code.put(store.opcode);
                 }
@@ -228,6 +232,16 @@ pub fn build(store: &Store, original: &[u8], site: u64, at: u64, tables: &Tables
     push(&mut code, table);
     address(&mut code, store, original, pointer);
     code.all(&[0x9F, 0x0F, 0x90, 0xC0]);
+    if store.extended {
+        code.all(&[rex(true, 0, false, table), 0xB8 + (table & 7)]);
+        code.imm64(tables.extended);
+        if table >= 8 {
+            code.put(0x41);
+        }
+        code.all(&[0x80, 0x38 | (table & 7), 0x00]);
+        code.all(&[0x0F, 0x84]);
+        slow_holes.add(code.hole());
+    }
     if store.width > 1 {
         code.all(&[rex(true, page, false, pointer), 0x8D, 0x40 | ((page & 7) << 3) | (pointer & 7), (store.width - 1) as u8]);
         code.all(&[rex(true, pointer, false, page), 0x31, direct(pointer, page)]);
@@ -287,7 +301,7 @@ pub fn build(store: &Store, original: &[u8], site: u64, at: u64, tables: &Tables
         code.fill(hole, distance as i32);
     }
     code.bytes[SITE_AT..SITE_AT + 8].copy_from_slice(&site.to_le_bytes());
-    let word = slow_at as u64 | (length as u64) << 16 | (store.width as u64) << 24;
+    let word = slow_at as u64 | (length as u64) << 16 | (store.width as u64) << 24 | u64::from(store.extended) << 40;
     code.bytes[SLOW_AT..SLOW_AT + 8].copy_from_slice(&word.to_le_bytes());
     Ok(Built { bytes: code.bytes, slow_at })
 }

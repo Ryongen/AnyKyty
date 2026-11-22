@@ -1137,7 +1137,8 @@ void PageManager::UnmarkWritten(uint64_t vaddr, uint64_t size, MarkLeave leave, 
 
 uint8_t PageManager::MarkArm() noexcept {
 	return static_cast<uint8_t>((Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingWrites) ? 1u : 0u) |
-	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::AgcSelfMark) ? 2u : 0u));
+	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::AgcSelfMark) ? 2u : 0u) |
+	                            (Common::RuntimeSwitches::On(Common::RuntimeSwitches::Switch::SelfMarkingRmw) ? 4u : 0u));
 }
 
 void PageManager::ForgetAllWritten() {
@@ -1165,6 +1166,7 @@ void PageManager::CollectMarkedWrites(HotPageWritten written, void* context, uin
 			const bool on = (arm & 1u) != 0;
 			impl.mark_on.store(on, std::memory_order_release);
 			kyty_selfmark_set_enabled(on);
+			kyty_selfmark_set_extended((arm & 4u) != 0);
 			ForgetAllWritten();
 			forced = true;
 		}

@@ -37,6 +37,7 @@ const SPOT_STEP: u64 = 8;
 const ADDRESS_BITS: u64 = 48;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static EXTENDED: AtomicU8 = AtomicU8::new(1);
 static LOCK: AtomicBool = AtomicBool::new(false);
 static PATCHING: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR: AtomicUsize = AtomicUsize::new(0);
@@ -77,6 +78,22 @@ pub fn configure(allocator: Option<NearAllocator>, fixed: Option<FixedAllocator>
 
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Release);
+}
+
+pub fn extended_on() -> bool {
+    EXTENDED.load(Ordering::Acquire) != 0
+}
+
+pub fn set_extended(on: bool) {
+    if EXTENDED.swap(u8::from(on), Ordering::AcqRel) != u8::from(on) && on {
+        for value in SITE_VALUES.iter() {
+            let _ = value.compare_exchange(REFUSED | Refusal::Extended as u64, 0, Ordering::AcqRel, Ordering::Relaxed);
+        }
+    }
+}
+
+fn extended_site(entry: u64) -> bool {
+    (unsafe { core::ptr::read((entry + SLOW_AT as u64) as *const u64) } >> 40) & 1 != 0
 }
 
 pub fn enabled() -> bool {
@@ -438,6 +455,9 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
         Ok(store) => store,
         Err(refusal) => return refuse(site, refusal),
     };
+    if store.extended && !extended_on() {
+        return refuse(site, Refusal::Extended);
+    }
     let length = store.len as usize;
     let short = store.short();
     if frozen(site, length as u64) {
@@ -445,7 +465,7 @@ unsafe fn patch_one(site: u64, alloc: bool) -> (u32, u64) {
     }
     let mut original = [0u8; MAX_LEN + 1];
     core::ptr::copy_nonoverlapping(site as *const u8, original.as_mut_ptr(), length);
-    let tables = Tables { delta: cards::delta_base(), cards: cards::card_base(), pages: cards::pages() as u32 };
+    let tables = Tables { delta: cards::delta_base(), cards: cards::card_base(), pages: cards::pages() as u32, extended: &EXTENDED as *const AtomicU8 as u64 };
     if tables.pages == 0 {
         return (OUTCOME_NONE, 0);
     }
@@ -601,6 +621,9 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
     if let Some((entry, slow)) = trampoline_of(address) {
         if slow {
             SLOW_FAULTS.fetch_add(1, Ordering::Relaxed);
+            if !extended_on() && extended_site(entry) {
+                return (OUTCOME_REFUSED, Refusal::Extended as u64);
+            }
             return (OUTCOME_SLOW_STORE, entry);
         }
         return (OUTCOME_INSIDE, entry);
@@ -611,6 +634,9 @@ pub unsafe fn lookup(address: u64) -> (u32, u64) {
     }
     if known != 0 {
         if jumps_to(address, known) {
+            if !extended_on() && extended_site(known) {
+                return (OUTCOME_REFUSED, Refusal::Extended as u64);
+            }
             return (OUTCOME_PATCHED, known);
         }
         if PATCHING.load(Ordering::SeqCst) == address {

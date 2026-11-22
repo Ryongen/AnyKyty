@@ -40,6 +40,11 @@ pub extern "C" fn kyty_selfmark_set_enabled(on: bool) {
 }
 
 #[no_mangle]
+pub extern "C" fn kyty_selfmark_set_extended(on: bool) {
+    sites::set_extended(on)
+}
+
+#[no_mangle]
 pub extern "C" fn kyty_selfmark_enabled() -> bool {
     sites::enabled()
 }

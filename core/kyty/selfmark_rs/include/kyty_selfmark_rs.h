@@ -41,7 +41,8 @@ enum {
 	KYTY_SELFMARK_REFUSAL_NO_CORE_SYNC    = 15,
 	KYTY_SELFMARK_REFUSAL_NO_WINDOW       = 16,
 	KYTY_SELFMARK_REFUSAL_FROZEN          = 17,
-	KYTY_SELFMARK_REFUSALS                = 18
+	KYTY_SELFMARK_REFUSAL_EXTENDED        = 18,
+	KYTY_SELFMARK_REFUSALS                = 19
 };
 
 enum {
@@ -98,6 +99,7 @@ bool              kyty_selfmark_init(uint64_t guest_limit, KytySelfMarkNearAlloc
                                      KytySelfMarkGuestCode guest);
 bool              kyty_selfmark_enabled(void);
 void              kyty_selfmark_set_enabled(bool on);
+void              kyty_selfmark_set_extended(bool on);
 KytySelfMarkFault kyty_selfmark_write_fault(uint64_t address);
 KytySelfMarkFault kyty_selfmark_lookup(uint64_t address);
 uint64_t          kyty_selfmark_target(uint64_t entry, const uint64_t* registers);
